@@ -24,6 +24,7 @@ jobs:
       - run: uv run --frozen --offline python -m unittest discover -s test -p "*_test.py"
       - run: npm run smoke
         env:
+          PI_BROWSER_HARNESS_EXECUTABLE: ${{ matrix.os == 'windows-latest' && 'C:/Program Files/Google/Chrome/Application/chrome.exe' || '/usr/bin/google-chrome' }}
           PI_BROWSER_HARNESS_EVIDENCE: ${{ runner.temp }}/browser-harness-evidence
       - uses: actions/upload-artifact@v5
         if: failure()

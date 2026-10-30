@@ -13,12 +13,16 @@ export async function version(endpoint) {
   if (!res.ok) throw new Error('CDP version HTTP ' + res.status);
   return res.json();
 }
-function executable() {
-  const candidates = [process.env.PI_BROWSER_HARNESS_EXECUTABLE,
+export function executable(selected = process.env.PI_BROWSER_HARNESS_EXECUTABLE, available = existsSync) {
+  if (selected) {
+    if (!available(selected)) throw new Error('Configured browser executable does not exist: ' + selected);
+    return selected;
+  }
+  const candidates = [
     process.platform === 'win32' ? 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe' : undefined,
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
-  const found = candidates.find(p => p && existsSync(p));
+  const found = candidates.find(p => p && available(p));
   if (!found) throw new Error('Set PI_BROWSER_HARNESS_EXECUTABLE to an installed Edge/Chrome executable.');
   return found;
 }

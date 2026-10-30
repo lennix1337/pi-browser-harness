@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { closeConnection, waitForVersion, waitForClosed } from '../scripts/browser.mjs';
+import { closeConnection, waitForVersion, waitForClosed, executable } from '../scripts/browser.mjs';
 
+test('explicit browser choice is respected; a missing executable never silently falls back', () => {
+  assert.equal(executable('explicit-chrome', path => path === 'explicit-chrome'), 'explicit-chrome');
+  assert.throws(() => executable('missing-chrome', () => false), /Configured browser executable does not exist/);
+});
 test('shutdown reset is not closure; only independent connection refusal confirms it', async () => {
   let probes = 0;
   await waitForClosed('http://127.0.0.1:1', async () => {
