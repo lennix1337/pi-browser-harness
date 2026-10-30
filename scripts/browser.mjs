@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -22,6 +22,17 @@ function executable() {
   if (!found) throw new Error('Set PI_BROWSER_HARNESS_EXECUTABLE to an installed Edge/Chrome executable.');
   return found;
 }
+export async function waitForVersion(endpoint, expectedPath, probe = version, wait = delay, deadline = Date.now() + 15000) {
+  let failure;
+  while (Date.now() < deadline) {
+    let info;
+    try { info = await probe(endpoint); }
+    catch (error) { failure = error; await wait(150); continue; }
+    if (new URL(info.webSocketDebuggerUrl).pathname !== expectedPath) throw new Error('Profile CDP identity mismatch.');
+    return info;
+  }
+  throw new Error('Browser CDP readiness failed (browser not relaunched): ' + (failure?.message ?? 'deadline'));
+}
 async function start(headless) {
   if (existsSync(record)) {
     const saved = JSON.parse(readFileSync(record, 'utf8'));
@@ -34,21 +45,26 @@ async function start(headless) {
   mkdirSync(home, { recursive: true });
   const { mkdtempSync } = await import('node:fs');
   const profile = mkdtempSync(join(home, 'profile-'));
+  const log = join(profile, 'browser.log');
+  const logFd = openSync(log, 'a');
   const child = spawn(executable(), ['--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
     '--user-data-dir=' + profile, '--no-first-run', '--no-default-browser-check',
-    ...(headless ? ['--headless=new'] : []), 'about:blank'], { detached: true, stdio: 'ignore', windowsHide: headless });
+    ...(headless ? ['--headless=new'] : []), 'about:blank'], { detached: true, stdio: ['ignore', 'ignore', logFd], windowsHide: headless });
+  closeSync(logFd);
   let failure;
   child.once('error', error => { failure = error; });
   child.once('exit', code => { failure = new Error('Browser exited before readiness: ' + code); });
   child.unref();
   const active = join(profile, 'DevToolsActivePort');
-  for (let attempt = 0; attempt < 100; attempt++) {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
     if (failure) throw failure;
     if (existsSync(active)) {
       const [port, path] = readFileSync(active, 'utf8').trim().split(/\r?\n/);
       const endpoint = 'http://127.0.0.1:' + port;
-      const info = await version(endpoint);
-      if (new URL(info.webSocketDebuggerUrl).pathname !== path) throw new Error('Profile CDP identity mismatch.');
+      let info;
+      try { info = await waitForVersion(endpoint, path, version, delay, deadline); }
+      catch (error) { throw new Error(error.message + '; own browser log: ' + log); }
       writeFileSync(record, JSON.stringify({ endpoint, ws: info.webSocketDebuggerUrl, profile, pid: child.pid }, null, 2));
       return { status: 'started', endpoint, profile, configure: 'Set PI_BROWSER_HARNESS_CDP_URL to endpoint, or pass endpoint to browser_harness open.' };
     }

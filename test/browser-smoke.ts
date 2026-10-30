@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { bridge } from '../src/client.ts';
 import { load } from './loader.ts';
 
-const home = mkdtempSync(join(tmpdir(), 'pi-browser-real-'));
+const home = mkdtempSync(join(process.env.RUNNER_TEMP ?? tmpdir(), 'pi-browser-real-'));
 process.env.PI_BROWSER_HARNESS_HOME = home;
 const output = resolve(process.env.PI_BROWSER_HARNESS_EVIDENCE ?? '../local-validation/runs/browser-harness', 'smoke-' + Date.now());
 mkdirSync(output, { recursive: true });
