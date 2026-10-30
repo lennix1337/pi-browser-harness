@@ -116,3 +116,19 @@ test('controllers cannot address another session tabs', async () => {
   assert.equal((await b.controller.execute({ action: 'close', tab: 'owned' })).isError, true);
   assert.equal(b.calls.length, 0);
 });
+test('the page a tab shows rides at the top of inspect/click results, even when a long result is paged', async () => {
+  const nodes = Array.from({ length: 400 }, (_, i) => ({ node: i + 1, role: 'button', name: `Allow ${i}` }));
+  const controller = new Controller(async request => {
+    if (request.action === 'open') return { target: 'owned', session: 's' };
+    if (request.action === 'inspect') return { url: 'https://accounts.google.com/o/oauth2/consent', nodes, totalNodes: nodes.length };
+    if (request.action === 'click') return { dispatched: true, url: 'https://example.com/next' };
+    return {};
+  });
+  await controller.execute({ action: 'open' });
+  const inspected = await controller.execute({ action: 'inspect', tab: 'owned' });
+  assert.equal(inspected.value.url, 'https://accounts.google.com/o/oauth2/consent');
+  assert.ok(inspected.value.receipt, 'the long result is paged');
+  assert.ok(JSON.stringify(inspected.value).indexOf('"url"') < JSON.stringify(inspected.value).indexOf('"preview"'), 'url comes before the page');
+  assert.equal((await controller.execute({ action: 'click', tab: 'owned', node: 3 })).value.url, 'https://example.com/next');
+  assert.equal((await controller.execute({ action: 'evaluate', tab: 'owned', expression: '1' })).value.url, undefined, 'no url reported, none invented');
+});

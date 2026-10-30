@@ -84,7 +84,9 @@ export class Controller {
         if (typeof result?.data !== 'string' || result.data.length > 6 * 1024 * 1024) throw new Error('Screenshot missing or exceeds 6 MiB.');
         return { value: { status: 'ok', tab: args.tab, format: 'png' }, image: result.data, isError: false };
       }
-      return { value: this.project(result, { tab: args.tab, ...(action === 'click' || action === 'type' ? { verification: 'Input dispatched only; inspect/evaluate the resulting state before claiming success.' } : {}) }), isError: false };
+      // The page the tab shows rides at the top, even when a long result is paged, so a host can tell a consent page.
+      const page = typeof result?.url === 'string' && result.url ? { url: result.url } : {};
+      return { value: this.project(result, { tab: args.tab, ...page, ...(action === 'click' || action === 'type' ? { verification: 'Input dispatched only; inspect/evaluate the resulting state before claiming success.' } : {}) }), isError: false };
     } catch (error) {
       return { value: { status: dispatched ? 'outcome_uncertain' : 'invalid_input',
         message: error instanceof Error ? error.message.slice(0, 500) : 'Browser request failed.',
