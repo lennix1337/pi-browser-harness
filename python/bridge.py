@@ -81,6 +81,12 @@ def main(request):
     target, session = request["target"], request["session"]
     def call(method, **params):
         return cdp(method, session_id=session, **params)
+    def page_url():
+        # The page this tab shows, so the host can tell a consent or billing page before the next input.
+        try:
+            return cdp("Target.getTargetInfo", targetId=target)["targetInfo"].get("url", "")
+        except Exception:
+            return ""
     if action == "close":
         return cdp("Target.closeTarget", targetId=target)
     if action == "navigate":
@@ -90,7 +96,7 @@ def main(request):
         return result
     if action == "inspect":
         nodes = call("Accessibility.getFullAXTree")["nodes"]
-        return {"nodes": [{"node": n.get("backendDOMNodeId"), "role": n.get("role", {}).get("value"),
+        return {"url": page_url(), "nodes": [{"node": n.get("backendDOMNodeId"), "role": n.get("role", {}).get("value"),
                            "name": n.get("name", {}).get("value", "")}
                           for n in nodes if not n.get("ignored")], "totalNodes": len(nodes)}
     if action == "screenshot":
@@ -108,11 +114,11 @@ def main(request):
         x, y = sum(quad[0::2]) / 4, sum(quad[1::2]) / 4
         call("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", clickCount=1)
         call("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", clickCount=1)
-        return {"dispatched": True}
+        return {"dispatched": True, "url": page_url()}
     if action == "type":
         call("DOM.focus", backendNodeId=request["node"])
         call("Input.insertText", text=request["text"])
-        return {"dispatched": True}
+        return {"dispatched": True, "url": page_url()}
     raise ValueError("Unknown action")
 
 

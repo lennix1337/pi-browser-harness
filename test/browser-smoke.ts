@@ -43,11 +43,13 @@ try {
   await call('task-owner', { action: 'evaluate', tab: mainTab, expression: waitFor('#name') });
   const denied = await tool.execute('unowned', { action: 'close', tab: sentinel }, undefined, undefined, { sessionManager: { getSessionId: () => 'task-owner' } } as any);
   assert.equal(denied.isError, true);
-  const snapshot = (await call('task-owner', { action: 'inspect', tab: mainTab })).details.result;
+  const inspected = (await call('task-owner', { action: 'inspect', tab: mainTab })).details;
+  const snapshot = inspected.result;
+  assert.equal(inspected.url, base + '/form', 'inspect reports the page the tab shows');
   const name = snapshot.nodes.find((node: any) => node.role === 'textbox' && node.name === 'Name');
   const save = snapshot.nodes.find((node: any) => node.role === 'button' && node.name === 'Save');
   assert.ok(name?.node); assert.ok(save?.node);
-  await call('task-owner', { action: 'type', tab: mainTab, node: name.node, text: 'Pi browser harness' });
+  assert.equal((await call('task-owner', { action: 'type', tab: mainTab, node: name.node, text: 'Pi browser harness' })).details.url, base + '/form', 'input reports its page');
   const field = (await call('task-owner', { action: 'evaluate', tab: mainTab, expression: 'document.querySelector("#name").value' })).details.result.value;
   assert.equal(field, 'Pi browser harness');
   await call('task-owner', { action: 'click', tab: mainTab, node: save.node });
