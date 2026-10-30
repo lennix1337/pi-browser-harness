@@ -67,7 +67,7 @@ def main(request):
     if ws.scheme != "ws" or ws.hostname != expected.hostname or ws.port != expected.port:
         raise ValueError("CDP WebSocket does not match the configured loopback endpoint")
     from browser_harness.admin import ensure_daemon
-    from browser_harness.helpers import cdp, _send
+    from browser_harness.helpers import cdp, _send, SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS
     with startup_lock(runtime / "startup.lock"):
         ensure_daemon(wait=10)
     action = request["action"]
@@ -94,7 +94,7 @@ def main(request):
                            "name": n.get("name", {}).get("value", "")}
                           for n in nodes if not n.get("ignored")], "totalNodes": len(nodes)}
     if action == "screenshot":
-        return call("Page.captureScreenshot", format="png", captureBeyondViewport=False)
+        return call("Page.captureScreenshot", _response_timeout=SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS, format="png", captureBeyondViewport=False)
     if action == "evaluate":
         result = call("Runtime.evaluate", expression=request["expression"], returnByValue=True, awaitPromise=True)
         if "exceptionDetails" in result:

@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { closeConnection, waitForVersion } from '../scripts/browser.mjs';
+import { closeConnection, waitForVersion, waitForClosed } from '../scripts/browser.mjs';
 
+test('shutdown reset is not closure; only independent connection refusal confirms it', async () => {
+  let probes = 0;
+  await waitForClosed('http://127.0.0.1:1', async () => {
+    probes++; throw new Error('fetch failed', { cause: { code: probes === 1 ? 'ECONNRESET' : 'ECONNREFUSED' } });
+  }, async () => {});
+  assert.equal(probes, 2);
+  await assert.rejects(waitForClosed('http://127.0.0.1:1', async () => { throw new Error('unclassified'); }, async () => {}), /closure not verified/);
+  await assert.rejects(waitForClosed('http://127.0.0.1:1', async () => ({still:'serving'}), async () => {}), /closure not verified/);
+});
 test('DevTools file can precede endpoint readiness; retry only the read probe, never browser launch', async () => {
   let probes = 0;
   const result = await waitForVersion('http://127.0.0.1:1', '/browser/identity', async () => {

@@ -15,6 +15,8 @@ export function endpoint(value = process.env.PI_BROWSER_HARNESS_CDP_URL ?? 'http
   return u.origin;
 }
 export type Request = Record<string, unknown> & { action: string; endpoint: string };
+// Upstream gives screenshot IPC 60s (not its ordinary 5s); keep host cancellation outside that bound.
+export const bridgeDeadline = (action: string) => action === 'screenshot' ? 75000 : 45000;
 export async function bridge(request: Request, signal?: AbortSignal): Promise<any> {
   if (!existsSync(python)) throw new Error(`Runtime missing. Run npm run setup in ${root}`);
   if (signal?.aborted) throw new Error('Aborted before dispatch');
@@ -28,7 +30,7 @@ export async function bridge(request: Request, signal?: AbortSignal): Promise<an
     const stop = (reason: string) => { failure = reason; child.kill(); };
     const abort = () => stop('Aborted; external outcome uncertain. Inspect before retrying.');
     signal?.addEventListener('abort', abort, { once: true });
-    const timer = setTimeout(() => stop('Deadline exceeded; external outcome uncertain. Inspect before retrying.'), 45000);
+    const timer = setTimeout(() => stop('Deadline exceeded; external outcome uncertain. Inspect before retrying.'), bridgeDeadline(request.action));
     child.stdout.on('data', (data: Buffer) => {
       bytes += data.length;
       if (bytes > 8 * 1024 * 1024) stop('Response exceeds 8 MiB; outcome uncertain. Narrow the query before continuing.');

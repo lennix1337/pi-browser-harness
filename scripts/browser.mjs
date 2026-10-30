@@ -89,6 +89,19 @@ export async function closeConnection(url, Constructor = WebSocket) {
     ws.addEventListener('close', ended);
   });
 }
+export async function waitForClosed(endpoint, probe = version, wait = delay) {
+  let lastError;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    try { await probe(endpoint); }
+    catch (error) {
+      if (error.cause?.code === 'ECONNREFUSED') return;
+      // ECONNRESET/timeouts during shutdown are not proof of closure: observe until refusal.
+      lastError = error;
+    }
+    await wait(100);
+  }
+  throw new Error('Browser closure not verified; outcome uncertain: ' + (lastError?.message ?? 'endpoint still responds'));
+}
 async function stop() {
   if (!existsSync(record)) return { status: 'not_started', scope: home };
   const saved = JSON.parse(readFileSync(record, 'utf8'));
@@ -96,15 +109,9 @@ async function stop() {
   if (current.webSocketDebuggerUrl !== saved.ws) throw new Error('Browser identity mismatch; refused to close.');
   await closeConnection(saved.ws);
   // A WebSocket close alone does not prove the endpoint stopped serving.
-  for (let attempt = 0; attempt < 40; attempt++) {
-    try { await version(saved.endpoint); }
-    catch (error) {
-      if (error.cause?.code !== 'ECONNREFUSED') throw new Error('Browser endpoint unavailable for an unclassified reason; closure not verified: ' + error.message);
-      unlinkSync(record); return { status: 'closed', profileRetained: saved.profile };
-    }
-    await delay(100);
-  }
-  throw new Error('Browser still responds after close; outcome uncertain.');
+  await waitForClosed(saved.endpoint);
+  unlinkSync(record);
+  return { status: 'closed', profileRetained: saved.profile };
 }
 
 if (process.argv[1] && resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase()) {
