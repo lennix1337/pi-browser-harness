@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "checks": {
+    "typecheck": { "argv": ["node", "node_modules/typescript/bin/tsc", "--noEmit"], "timeoutMs": 60000, "description": "Strict TypeScript, no inference/network" },
+    "unit": { "argv": ["node", "--import", "tsx", "--test", "test/controller.test.ts", "test/discovery.test.ts", "test/browser.test.mjs"], "timeoutMs": 60000, "description": "Controller boundaries and fresh native Pi discovery, offline" },
+    "mutations": { "argv": ["node", "test/mutations.mjs"], "timeoutMs": 60000, "description": "Eight disposable ownership/session/endpoint/replay/closure/URL/concurrency/paging mutants must fail assertions" },
+    "python": { "argv": ["uv", "run", "--frozen", "--offline", "python", "-m", "unittest", "discover", "-s", "test", "-p", "*_test.py"], "timeoutMs": 30000, "description": "Python endpoint/OS-lock/redirect boundaries, offline" },
+    "browser-smoke": { "argv": ["node", "--import", "tsx", "test/browser-smoke.ts"], "timeoutMs": 120000, "description": "Fresh isolated local browser: native Pi tool -> upstream daemon -> CDP -> visible form result, screenshot, owned-tab cleanup. No login/cloud/provider." }
+  }
+}

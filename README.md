@@ -1,0 +1,55 @@
+# Pi Browser Harness
+
+Controle nativo de navegador no Pi, usando [browser-use/browser-harness](https://github.com/browser-use/browser-harness) **0.1.13**. Ferramenta `browser_harness` e skill `pi-browser-harness`: abrir, navegar, inspecionar acessibilidade, clicar, digitar, executar JS da página, capturar PNG e fechar abas próprias.
+
+## Instalação
+
+```sh
+git clone https://github.com/lennix1337/pi-browser-harness.git
+cd pi-browser-harness
+npm ci --ignore-scripts
+npm run setup
+```
+
+Requer Node 24.2+, `uv` e Edge/Chrome instalado. `uv sync --frozen --python 3.12` usa ambiente `.venv` local e dependências fixadas por `uv.lock`; não instala ferramentas globais. Adicione o caminho absoluto deste pacote a `packages` em `~/.pi/agent/settings.json` e faça `/reload` uma vez. Os dotfiles do proprietário já contêm pacote, pin e instaladores Windows/macOS.
+
+```sh
+npm run browser -- start            # perfil isolado, janela visível
+npm run browser -- start --headless # teste descartável
+npm run browser -- status           # somente registro local
+npm run browser -- stop             # somente a instância própria identificada
+```
+
+O launcher imprime um endpoint de porta dinâmica. Passe esse endpoint em `browser_harness({action:"open",endpoint:"http://127.0.0.1:PORT",url:"https://example.com"})`. `status` da ferramenta não inicia conexão/navegador. `PI_BROWSER_HARNESS_CDP_URL` pode configurar o endpoint padrão; não confunda a porta com comprovação do perfil. `PI_BROWSER_HARNESS_EXECUTABLE` seleciona um executável instalado, `PI_BROWSER_HARNESS_HOME` muda a pasta de estado/capturas (padrão: `~/.cache/pi-browser-harness`).
+
+## Padrão de uso
+
+Leia [a skill](skills/pi-browser-harness/SKILL.md) para o fluxo e regras DentAI. Use **Code Mode** para agrupar I/O independente ou combinar aquisição e cálculo já conhecido; use **REPL** para cálculo puro com estado entre etapas dependentes; use **Browser Harness** quando precisa interagir com o navegador ou renderização JS. Pesquisa/leitura pública simples continua nas ferramentas web.
+
+A primeira operação cria aba própria em segundo plano e retorna seu ID. As operações seguintes usam ID + sessão CDP explícita, nunca a aba ativa. `inspect` retorna IDs backend da árvore AX; `click`/`type` apenas confirmam despacho: valide o resultado com `evaluate`/`inspect`, requisição/servidor quando relevante, e screenshot. Resultados longos têm recibos pagináveis sem reexecutar o efeito (8 resultados, até 1 MiB cada). PNGs preservam a imagem nativa do Pi.
+
+## Limites e segurança
+
+- Somente endpoints CDP HTTP de loopback explícitos; sem autodescoberta, inicialização de perfil pessoal ou fallback cloud. O Python verifica também a origem WebSocket anunciada e recusa redirects.
+- Abas de outra sessão, inclusive abas pessoais vazias, não podem ser adotadas ou fechadas. O upstream `new_tab` pode reaproveitar uma aba vazia; esta integração cria um target novo diretamente e registra sua identidade antes de navegar.
+- Sem gravações contínuas, telemetria, marcadores de título, importação de cookies, login ou API paga. Capturas explícitas continuam disponíveis.
+- O processo upstream mantém uma aba branca de infraestrutura e conexão por endpoint. O estado/recibos de cada sessão Pi são separados. Reload perde os handles: conclua ou registre trabalho aberto antes. Não há readoção automática.
+- Falha/timeout/abort após despacho retorna `outcome_uncertain`; sem retry de efeitos nem redirecionamento silencioso de sessões CDP expiradas. O adaptador limita tempo/saída e serializa ações por sessão.
+- Não é uma sandbox de autoridade: JS da página pode escrever no site e endpoints loopback podem expor dados pessoais. As permissões da tarefa, verificação de perfil/conta e confirmações continuam obrigatórias.
+- Upload, downloads e outras operações CDP ainda não estão expostos no adaptador tipado; adicione a menor operação necessária com teste de ownership em vez de trocar silenciosamente de driver.
+
+## Validação
+
+```sh
+npm run check
+npm test
+npm run mutations
+uv run --frozen --offline python -m unittest discover -s test -p "*_test.py"
+npm run smoke
+```
+
+As mesmas receitas estão em `.pi/checks.json`. O smoke usa pacote real via `DefaultResourceLoader` → ferramenta nativa → Python upstream → daemon → CDP → formulário HTTP local; verifica texto digitado, um POST, resultado visível, PNG, aba sentinela intacta, recusa de aba alheia e fechamento dos recursos próprios. Sem provedor/modelo. Artefatos ficam fora do Git em `../local-validation/runs/browser-harness/` (ou `PI_BROWSER_HARNESS_EVIDENCE`). Windows/Edge local validado; CI testa Windows/Linux, macOS depende de validação na máquina alvo.
+
+## Origem
+
+Implementação Pi própria, não um fork integral. Atribuição: browser-harness, Browser Use, licença MIT; upstream inspecionado em `4ced8e0087d2d45ea2d08c00cb62449b2d94a90e`. O pacote Python distribuído é fixado em 0.1.13 com hashes do lockfile. Sem release npm ou serviço externo.
