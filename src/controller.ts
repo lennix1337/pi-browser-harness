@@ -17,6 +17,8 @@ function pageUrl(value: unknown): string {
   if (!['https:', 'http:'].includes(u.protocol) || u.username || u.password) throw new Error('Use an HTTP(S) URL without embedded credentials.');
   return value;
 }
+/** CDP's answer to `Target.closeTarget` for an id the browser does not have. */
+const TAB_GONE = /No target with given id/i;
 export class Controller {
   private tabs = new Map<string, { endpoint: string; target: string; session: string }>();
   private receipts = new Map<string, string>();
@@ -88,6 +90,12 @@ export class Controller {
       const page = typeof result?.url === 'string' && result.url ? { url: result.url } : {};
       return { value: this.project(result, { tab: args.tab, ...page, ...(action === 'click' || action === 'type' ? { verification: 'Input dispatched only; inspect/evaluate the resulting state before claiming success.' } : {}) }), isError: false };
     } catch (error) {
+      // Closing a tab the browser no longer has (closed by hand, crashed) changes nothing there: release the handle,
+      // or it would count against the 16-tab limit and list as owned forever.
+      if (action === 'close' && dispatched && error instanceof Error && TAB_GONE.test(error.message)) {
+        this.tabs.delete(args.tab!);
+        return { value: { status: 'ok', tab: args.tab, note: 'The browser no longer had this tab; ownership released.' }, isError: false };
+      }
       return { value: { status: dispatched ? 'outcome_uncertain' : 'invalid_input',
         message: error instanceof Error ? error.message.slice(0, 500) : 'Browser request failed.',
         tabs: [...this.tabs.keys()], next: { tool: 'browser_harness', arguments: { action: 'status' } },

@@ -132,3 +132,21 @@ test('the page a tab shows rides at the top of inspect/click results, even when 
   assert.equal((await controller.execute({ action: 'click', tab: 'owned', node: 3 })).value.url, 'https://example.com/next');
   assert.equal((await controller.execute({ action: 'evaluate', tab: 'owned', expression: '1' })).value.url, undefined, 'no url reported, none invented');
 });
+test('a tab the browser no longer has is released on close instead of staying owned forever', async () => {
+  const gone = new Controller(async request => {
+    if (request.action === 'open') return { target: 't', session: 's' };
+    throw new Error('{"code":-32602,"message":"No target with given id found"}');
+  });
+  await gone.execute({ action: 'open' });
+  const closed = await gone.execute({ action: 'close', tab: 't' });
+  assert.equal(closed.isError, false);
+  assert.deepEqual((await gone.execute({})).value.tabs, []);
+  assert.equal((await gone.execute({ action: 'inspect', tab: 't' })).value.status, 'invalid_input', 'the released handle is no longer addressable');
+  const other = new Controller(async request => {
+    if (request.action === 'open') return { target: 't', session: 's' };
+    throw new Error('Deadline exceeded; external outcome uncertain.');
+  });
+  await other.execute({ action: 'open' });
+  assert.equal((await other.execute({ action: 'close', tab: 't' })).value.status, 'outcome_uncertain');
+  assert.deepEqual((await other.execute({})).value.tabs, ['t'], 'an uncertain close keeps the handle');
+});

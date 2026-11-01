@@ -37,10 +37,24 @@ export async function waitForVersion(endpoint, expectedPath, probe = version, wa
   }
   throw new Error('Browser CDP readiness failed (browser not relaunched): ' + (failure?.message ?? 'deadline'));
 }
+/**
+ * The browser recorded in `file`, if any. A record whose endpoint refuses connections names a browser that is gone
+ * (closed by hand, crashed, machine restarted): nothing listens there, so the stale record is removed and `gone` is set.
+ * Any other probe failure is not proof and is rethrown with the record kept.
+ */
+export async function recordedBrowser(file, probe = version) {
+  if (!existsSync(file)) return {};
+  const saved = JSON.parse(readFileSync(file, 'utf8'));
+  try { return { saved, current: await probe(saved.endpoint) }; }
+  catch (error) {
+    if (error.cause?.code !== 'ECONNREFUSED') throw error;
+    unlinkSync(file);
+    return { saved, gone: true };
+  }
+}
 async function start(headless) {
-  if (existsSync(record)) {
-    const saved = JSON.parse(readFileSync(record, 'utf8'));
-    const current = await version(saved.endpoint);
+  const { saved, current, gone } = await recordedBrowser(record);
+  if (saved && !gone) {
     if (current.webSocketDebuggerUrl !== saved.ws) throw new Error('Browser identity mismatch; refused to reuse. Inspect browser.json without killing other processes.');
     return { status: 'running', endpoint: saved.endpoint, profile: saved.profile };
   }
@@ -107,9 +121,9 @@ export async function waitForClosed(endpoint, probe = version, wait = delay) {
   throw new Error('Browser closure not verified; outcome uncertain: ' + (lastError?.message ?? 'endpoint still responds'));
 }
 async function stop() {
-  if (!existsSync(record)) return { status: 'not_started', scope: home };
-  const saved = JSON.parse(readFileSync(record, 'utf8'));
-  const current = await version(saved.endpoint);
+  const { saved, current, gone } = await recordedBrowser(record);
+  if (!saved) return { status: 'not_started', scope: home };
+  if (gone) return { status: 'not_running', profileRetained: saved.profile };
   if (current.webSocketDebuggerUrl !== saved.ws) throw new Error('Browser identity mismatch; refused to close.');
   await closeConnection(saved.ws);
   // A WebSocket close alone does not prove the endpoint stopped serving.

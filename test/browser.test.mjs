@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { closeConnection, waitForVersion, waitForClosed, executable } from '../scripts/browser.mjs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { closeConnection, waitForVersion, waitForClosed, executable, recordedBrowser } from '../scripts/browser.mjs';
 
 test('explicit browser choice is respected; a missing executable never silently falls back', () => {
   assert.equal(executable('explicit-chrome', path => path === 'explicit-chrome'), 'explicit-chrome');
@@ -47,4 +50,18 @@ test('pre-dispatch connection failure cannot be classified as a successful close
     close() {}
   }
   await assert.rejects(closeConnection('ws://127.0.0.1:1/test', FailedBrowser), /before close dispatch/);
+});
+test('a record whose endpoint refuses connections is stale and removed; other probe failures keep it', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'browser-record-')), 'browser.json');
+  const saved = { endpoint: 'http://127.0.0.1:1', ws: 'ws://127.0.0.1:1/browser/x', profile: 'p' };
+  assert.deepEqual(await recordedBrowser(file, async () => assert.fail('no record, nothing to probe')), {});
+  writeFileSync(file, JSON.stringify(saved));
+  const alive = await recordedBrowser(file, async () => ({ webSocketDebuggerUrl: saved.ws }));
+  assert.deepEqual(alive, { saved, current: { webSocketDebuggerUrl: saved.ws } });
+  assert.ok(existsSync(file), 'a live browser keeps its record');
+  await assert.rejects(recordedBrowser(file, async () => { throw new Error('fetch failed', { cause: { code: 'ECONNRESET' } }); }), /fetch failed/);
+  assert.ok(existsSync(file), 'a reset or timeout is not proof the browser is gone');
+  const stale = await recordedBrowser(file, async () => { throw new Error('fetch failed', { cause: { code: 'ECONNREFUSED' } }); });
+  assert.deepEqual(stale, { saved, gone: true });
+  assert.equal(existsSync(file), false, 'the stale record is removed so start and stop are not blocked forever');
 });
