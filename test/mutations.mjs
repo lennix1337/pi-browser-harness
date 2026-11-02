@@ -12,8 +12,9 @@ const mutants = [
   ['page-url', 'src/controller.ts', "if (!['https:', 'http:'].includes(u.protocol) || u.username || u.password)", 'if (false)'],
   ['concurrency', 'src/controller.ts', 'if (this.busy)', 'if (false)'],
   ['paging-offset', 'src/controller.ts', 'if (!Number.isInteger(offset) || offset < 0 || offset > value.length || !Number.isInteger(limit) || limit < 1 || limit > 12000)', 'if (false)'],
+  ['shutdown-close', 'src/index.ts', 'await Promise.all([...bridges.values()].map(bridge => bridge.close()));', '', 'test/extension-lifecycle.test.ts'],
 ];
-for (const [name, file, before, after] of mutants) {
+for (const [name, file, before, after, testFile = 'test/controller.test.ts'] of mutants) {
   const home = mkdtempSync(join(tmpdir(), 'pi-browser-mutant-'));
   try {
     for (const dir of ['src', 'test']) cpSync(join(root, dir), join(home, dir), { recursive: true });
@@ -22,10 +23,10 @@ for (const [name, file, before, after] of mutants) {
     const path = join(home, file), source = readFileSync(path, 'utf8');
     if (source.split(before).length !== 2) throw new Error(name + ': ambiguous mutation anchor');
     writeFileSync(path, source.replace(before, after));
-    const result = spawnSync(process.execPath, ['--import', 'tsx', '--test', 'test/controller.test.ts'], { cwd: home, encoding: 'utf8', timeout: 30000 });
+    const result = spawnSync(process.execPath, ['--import', 'tsx', '--test', testFile], { cwd: home, encoding: 'utf8', timeout: 30000 });
     const output = result.stdout + result.stderr;
     if (result.status !== 1 || !/AssertionError|ERR_ASSERTION/.test(output)) throw new Error(name + ': not killed by assertion; ' + output.slice(-2000));
     console.log(name + ': killed by assertion');
   } finally { rmSync(home, { recursive: true, force: true }); }
 }
-console.log('8/8 boundary mutants killed');
+console.log(`${mutants.length}/${mutants.length} boundary mutants killed`);

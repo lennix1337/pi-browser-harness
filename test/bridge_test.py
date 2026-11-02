@@ -50,5 +50,87 @@ class Boundaries(unittest.TestCase):
         with self.assertRaises(ValueError):
             bridge.NoRedirect().redirect_request(None, None, 302, "Found", {}, "https://example.com/")
 
+
+ENDPOINT = "http://127.0.0.1:9333"
+
+def version_response():
+    response = io.BytesIO(json.dumps({"webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/browser/test"}).encode())
+    response.geturl = lambda: ENDPOINT + "/json/version"
+    return response
+
+class Serve(unittest.TestCase):
+    """Persistent worker: one hello, then JSON-line requests answered by id on the same channel."""
+
+    def run_worker(self, messages, root, evaluate=None):
+        inbox = [(json.dumps(message) + "\n").encode() for message in messages]
+        outbox = []
+        calls = []
+        def cdp(method, **params):
+            calls.append((method, params))
+            if evaluate is not None:
+                return evaluate(method, params)
+            return {"result": {"type": "number", "value": 2}}
+        def read():
+            return inbox.pop(0) if inbox else b""
+        with patch.dict(os.environ, {"PI_BROWSER_HARNESS_HOME": root}), patch.object(bridge, "build_opener") as opener, \
+                patch("browser_harness.admin.ensure_daemon") as ensure, patch("browser_harness.helpers.cdp", cdp):
+            opener.return_value.open.side_effect = lambda *args, **kwargs: version_response()
+            code = bridge.serve(read, outbox.append)
+        return code, outbox, calls, ensure
+
+    def test_hello_configures_the_endpoint_runtime_and_acknowledges_by_id(self):
+        with tempfile.TemporaryDirectory() as root:
+            code, outbox, calls, _ = self.run_worker([{"id": 0, "control": "hello", "endpoint": ENDPOINT}], root)
+            self.assertEqual(code, 0)
+            self.assertEqual(outbox, [{"id": 0, "control": "ready"}])
+            self.assertEqual(calls, [])
+            runtime = Path(root) / bridge.hashlib.sha256(ENDPOINT.encode()).hexdigest()[:16]
+            self.assertTrue(runtime.is_dir(), "the worker uses the same per-endpoint runtime as the one-shot call")
+
+    def test_many_actions_reuse_one_worker_and_each_reply_carries_its_request_id(self):
+        with tempfile.TemporaryDirectory() as root:
+            hello = {"id": 0, "control": "hello", "endpoint": ENDPOINT}
+            evaluate = lambda i: {"id": i, "action": "evaluate", "endpoint": ENDPOINT, "target": "owned", "session": "s", "expression": "1"}
+            code, outbox, calls, ensure = self.run_worker([hello, evaluate(1), evaluate(2)], root)
+            self.assertEqual(code, 0)
+            self.assertEqual([reply["id"] for reply in outbox], [0, 1, 2])
+            self.assertTrue(all(reply["ok"] for reply in outbox[1:]))
+            self.assertEqual(outbox[1]["result"]["value"], 2)
+            self.assertEqual(ensure.call_count, 2, "each action still self-heals the daemon before dispatch")
+            self.assertEqual([method for method, _ in calls], ["Runtime.evaluate", "Runtime.evaluate"])
+
+    def test_ping_answers_without_verifying_or_touching_the_browser(self):
+        with tempfile.TemporaryDirectory() as root:
+            code, outbox, calls, ensure = self.run_worker([{"id": 0, "control": "hello", "endpoint": ENDPOINT}, {"id": 7, "control": "ping"}], root)
+            self.assertEqual(outbox[1], {"id": 7, "ok": True, "control": "pong"})
+            self.assertEqual(calls, [])
+            self.assertEqual(ensure.call_count, 0)
+
+    def test_a_request_for_another_endpoint_is_refused_and_the_worker_keeps_serving(self):
+        with tempfile.TemporaryDirectory() as root:
+            other = {"id": 1, "action": "inspect", "endpoint": "http://127.0.0.1:9444", "target": "t", "session": "s"}
+            code, outbox, calls, _ = self.run_worker([{"id": 0, "control": "hello", "endpoint": ENDPOINT}, other, {"id": 2, "control": "ping"}], root)
+            self.assertFalse(outbox[1]["ok"])
+            self.assertIn("does not match", outbox[1]["error"])
+            self.assertEqual(outbox[2]["control"], "pong")
+            self.assertEqual(calls, [])
+
+    def test_a_failed_action_is_one_error_reply_and_the_worker_keeps_serving(self):
+        def fail(method, params):
+            raise RuntimeError("No target with given id found")
+        with tempfile.TemporaryDirectory() as root:
+            evaluate = {"id": 1, "action": "evaluate", "endpoint": ENDPOINT, "target": "gone", "session": "s", "expression": "1"}
+            code, outbox, calls, _ = self.run_worker([{"id": 0, "control": "hello", "endpoint": ENDPOINT}, evaluate, {"id": 2, "control": "ping"}], root, evaluate=fail)
+            self.assertEqual(code, 0)
+            self.assertEqual(outbox[1], {"id": 1, "ok": False, "error": "No target with given id found"})
+            self.assertEqual(outbox[2]["control"], "pong")
+
+    def test_a_non_loopback_endpoint_fails_the_hello_and_exits_nonzero(self):
+        with tempfile.TemporaryDirectory() as root:
+            code, outbox, _, _ = self.run_worker([{"id": 0, "control": "hello", "endpoint": "https://example.com"}], root)
+            self.assertEqual(code, 1)
+            self.assertEqual(outbox[0]["control"], "error")
+            self.assertIn("loopback", outbox[0]["error"].lower())
+
 if __name__ == "__main__":
     unittest.main()

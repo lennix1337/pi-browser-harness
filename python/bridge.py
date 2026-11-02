@@ -1,4 +1,9 @@
-"""One request through upstream browser-harness. No CLI exec or active-tab helpers."""
+"""Browser-harness bridge: one request per process (default) or a persistent worker (`--serve`).
+
+Both paths run the same checks on every action: loopback endpoint, no redirects, advertised WebSocket origin, and
+self-healing of the upstream daemon under the startup lock. `--serve` only avoids paying the interpreter start and the
+upstream imports again. No CLI exec or active-tab helpers.
+"""
 import contextlib
 import hashlib
 import json
@@ -46,16 +51,25 @@ def startup_lock(path):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def main(request):
-    endpoint = local_endpoint(request["endpoint"])
+def runtime_for(endpoint):
     home = Path(os.environ.get("PI_BROWSER_HARNESS_HOME", Path.home() / ".cache" / "pi-browser-harness"))
-    runtime = home / hashlib.sha256(endpoint.encode()).hexdigest()[:16]
+    return home / hashlib.sha256(endpoint.encode()).hexdigest()[:16]
+
+
+def configure(value):
+    """Validate the endpoint and set the upstream environment. Must run before any upstream import."""
+    endpoint = local_endpoint(value)
+    runtime = runtime_for(endpoint)
     runtime.mkdir(parents=True, exist_ok=True)
     os.environ.update(BH_HOME=str(runtime), BH_RECORD="0", BH_TELEMETRY="0", BH_TAB_MARKER="0",
                       BH_DOMAIN_SKILLS="0", BU_CDP_URL=endpoint, BU_NAME="pi", NO_PROXY="localhost,127.0.0.1,::1")
     for key in ("BU_CDP_WS", "BU_BROWSER_ID", "BROWSER_USE_API_KEY", "BH_AGENT_WORKSPACE",
                 "BH_RUNTIME_DIR", "BH_TMP_DIR", "BROWSER_HARNESS_HOME"):
         os.environ.pop(key, None)
+    return endpoint
+
+
+def verify_endpoint(endpoint):
     # Fail before daemon startup: no auto-discovery, personal browser launch, cloud bootstrap or redirects.
     opener = build_opener(ProxyHandler({}), NoRedirect())
     with opener.open(endpoint + "/json/version", timeout=2) as response:
@@ -66,10 +80,24 @@ def main(request):
     expected = urlparse(endpoint)
     if ws.scheme != "ws" or ws.hostname != expected.hostname or ws.port != expected.port:
         raise ValueError("CDP WebSocket does not match the configured loopback endpoint")
+
+
+def prepare(endpoint):
+    """Run before every action: verify the endpoint, then self-heal the upstream daemon under the startup lock."""
+    verify_endpoint(endpoint)
     from browser_harness.admin import ensure_daemon
-    from browser_harness.helpers import cdp, _send, SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS
-    with startup_lock(runtime / "startup.lock"):
+    with startup_lock(runtime_for(endpoint) / "startup.lock"):
         ensure_daemon(wait=10)
+
+
+def main(request):
+    """One request, one process: the original one-shot contract."""
+    prepare(configure(request["endpoint"]))
+    return act(request)
+
+
+def act(request):
+    from browser_harness.helpers import cdp, _send, SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS
     action = request["action"]
     if action == "shutdown":
         return _send({"meta": "shutdown"})
@@ -122,7 +150,52 @@ def main(request):
     raise ValueError("Unknown action")
 
 
+def serve(read, write):
+    """Persistent worker for one endpoint. `read` returns one request line (bytes, b"" at EOF); `write` takes one reply.
+
+    Protocol: the host sends a hello with the endpoint, then requests carrying an `id`. Every reply repeats that id.
+    A failed action is one error reply and the worker keeps serving. EOF from the host is a clean exit.
+    """
+    line = read()
+    if not line:
+        return 0
+    hello = json.loads(line)
+    try:
+        endpoint = configure(hello["endpoint"])
+        # Import once per worker: the upstream modules read their environment at import, so configure() ran first.
+        from browser_harness import admin, helpers  # noqa: F401
+    except Exception as error:
+        write({"id": hello.get("id"), "control": "error", "error": str(error)[:500]})
+        return 1
+    write({"id": hello.get("id"), "control": "ready"})
+    while True:
+        line = read()
+        if not line:
+            return 0
+        request = None
+        try:
+            request = json.loads(line)
+            if request.get("control") == "ping":
+                write({"id": request.get("id"), "ok": True, "control": "pong"})
+                continue
+            if request.get("endpoint") != endpoint:
+                raise ValueError("request endpoint does not match this worker")
+            prepare(endpoint)
+            write({"id": request.get("id"), "ok": True, "result": act(request)})
+        except Exception as error:
+            write({"id": request.get("id") if isinstance(request, dict) else None, "ok": False, "error": str(error)[:500]})
+
+
 if __name__ == "__main__":
+    if "--serve" in sys.argv[1:]:
+        protocol = sys.stdout.buffer
+        # The protocol owns the real stdout; anything upstream prints goes to stderr, which the host discards.
+        sys.stdout = sys.stderr
+
+        def write(message):
+            protocol.write((json.dumps(message, ensure_ascii=True) + "\n").encode("ascii"))
+            protocol.flush()
+        sys.exit(serve(sys.stdin.buffer.readline, write))
     sys.stdout.reconfigure(encoding="utf-8")
     try:
         print(json.dumps({"ok": True, "result": main(json.load(sys.stdin))}, ensure_ascii=True))
