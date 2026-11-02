@@ -74,7 +74,8 @@ async function start(headless) {
   child.once('exit', code => { failure = new Error('Browser exited before readiness: ' + code); });
   child.unref();
   const active = join(profile, 'DevToolsActivePort');
-  const deadline = Date.now() + 15000;
+  // A cold first launch (new profile, Windows CI runner) has taken over 15 s to write DevToolsActivePort.
+  const deadline = Date.now() + 45000;
   while (Date.now() < deadline) {
     if (failure) throw failure;
     if (existsSync(active)) {
