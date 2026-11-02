@@ -20,21 +20,24 @@ Severity: P1 wrong behaviour with real impact, P2 wrong behaviour in a reachable
 - **Findings**
   - **BH-1 (P2, fixed).** An owned tab the browser no longer had (user closed it by hand, it crashed) could never leave the map: `close` goes to `Target.closeTarget`, the browser answers "No target with given id found", the controller reports `outcome_uncertain` and keeps the handle. The dead handle stayed in `status.tabs`, counted against the 16-tab limit and made `open` refuse once 16 had accumulated. Fix: that CDP answer on `close` releases ownership (closing an absent target changes nothing, so releasing is safe); every other close failure (timeout, abort, transport) still keeps the handle as uncertain. Test: `a tab the browser no longer has is released on close instead of staying owned forever`.
   - BH-2 (P3, catalogued). If the bridge is killed (deadline/abort) after `Target.createTarget` ran but before its reply, the tab exists in the browser but is not recorded: an unowned orphan the controller will never address. Unavoidable without a server-side marker (`BH_TAB_MARKER` is deliberately off); the response says `outcome_uncertain`.
-  - BH-3 (P3, catalogued). `sessions` in `src/index.ts` has no `session_shutdown` hook and a hard cap of 32 controllers; after 32 distinct sessions in one Pi process the tool throws for new ones until reload. Intentional: dropping a controller would lose the handles of tabs still open ("reload only after finishing existing browser work").
+  - BH-3 (P3, catalogued). `sessions` in `src/index.ts` has a hard cap of 32 controllers (its bridge worker is ended on `session_shutdown`, see section 3); after 32 distinct sessions in one Pi process the tool throws for new ones until reload. Intentional: dropping a controller would lose the handles of tabs still open ("reload only after finishing existing browser work").
   - BH-4 (P3, catalogued). `busy`, `acquired` and `dispatched` are set by the same statement; `busy` is the instance lock, the other two are call-local and only choose the error wording and whether `finally` releases the lock. They never disagree, so they were left as they are.
 
 ## 2. Session operation lock (`Controller.busy`)
 
 - **States:** free / busy. `status` and `read` do not take it (they never touch the browser); `open` and page actions take it, so a second call is refused ("Serialize interactions"), never queued. Released in `finally` only by the call that took it (`acquired`), tested by `parallel request cannot retarget or release another operation lock`. Explicit and correct. No findings.
 
-## 3. Bridge child process (`src/client.ts`, `bridge`)
+## 3. Bridge process (`src/bridge-worker.ts`, `BridgeSession`; one-shot path `src/client.ts`, `bridge`)
 
-- **States:** spawned -> (stdout streaming) -> settled by exactly one of: `close` with a reply, `error`, deadline (45 s, screenshot 75 s), abort, response over 8 MiB, stdin failure.
-- **Mechanism:** `failure` (string) records why the host stopped it; `close` rejects with it, otherwise parses the single JSON reply. The timer and abort listener are removed on `error` and `close`. `child.kill()` is the only stop. A promise settles once, so a late second `reject` is inert.
+- **States per (session, endpoint):** absent -> starting (hello answered `ready`) -> idle <-> busy (one request in flight) -> `ended` (EOF, exit 0) or `killed` (deadline, abort, crash, bad reply, grace expired). A killed or exited worker is replaced, never reused.
+- **Transitions:** before every dispatch the worker must answer a ping within 2 s; otherwise it is killed and a fresh one starts, so an action is never sent to a dead worker and nothing is replayed. A crash, deadline, abort, reply over 8 MiB or non-protocol output during a request kills the worker and reports the action as outcome uncertain; the next action starts a fresh worker. `close()` sends EOF and kills the worker only if it ignores EOF for 3 s.
+- **Mechanism:** `python/bridge.py --serve` runs `serve()`: a hello with the endpoint, then requests carrying an `id` (ping answered without touching the browser). Each action runs the same endpoint check and daemon self-heal as the one-shot path (`prepare`). The one-shot `client.ts` `bridge` remains for the benchmark baseline and the smoke test.
 - **Findings**
-  - BH-5 (P3, catalogued). `stop` kills only the direct child; a Windows venv `python.exe` launcher may leave its grandchild running until it finishes its single request. The bridge handles one request and exits, so the effect is bounded, but it is not verified against a live launcher here.
+  - BH-5 (P3, measured on this Windows host). Killing a worker ends its venv launcher and its interpreter child (three runs). The upstream daemon the worker started outlives the kill, as designed: the next worker reuses it (same daemon pid), and a daemon replaced under a live worker is reached without restarting it (new daemon pid, same worker). Not verified under other console or job setups.
   - BH-6 (P3, catalogued). `python/bridge.py` has a `shutdown` action the controller's field table does not allow: a dead branch from the TypeScript side.
   - BH-7 (P3, catalogued). `startup_lock` uses a non-blocking OS lock: two Pi processes opening on the same endpoint at the same instant make one of them fail with a lock error (reported as an error, nothing dispatched) instead of waiting. Per-session serialization means it needs two sessions.
+
+  - BH-11 (P3, new). An idle worker lives until its session shuts down. Measured resident size: about 43 MB (launcher, helper, interpreter). Controllers are capped at 32, so the worst case is about 1.4 GB of idle workers. No idle reaping yet.
 
 ## 4. Local browser record (`scripts/browser.mjs`: `browser.json`, `start`, `stop`)
 
@@ -55,7 +58,7 @@ FIFO of 8 results; unknown or expired receipts and bad offsets are errors, not e
 | --- | --- | --- | --- | --- |
 | Owned tab | unknown / owned | map membership, one writer per transition | map membership + "target gone" release | BH-1 P2 fixed, BH-2 P3, BH-3 P3, BH-4 P3 |
 | Session operation lock | free / busy | one flag, released by owner only | unchanged | none |
-| Bridge child process | running / settled by one cause | `failure` string + listeners | unchanged | BH-5 P3, BH-6 P3, BH-7 P3 |
+| Bridge process | one process per action (before), one worker per session: starting / idle / busy / ended / killed | `failure` string + listeners | ping before dispatch, replace on kill, EOF on close | BH-5 P3 (measured), BH-6 P3, BH-7 P3, BH-11 P3 |
 | Local browser record | absent / recorded | persisted JSON read unvalidated | stale record detected by connection refusal | BH-8 P2 fixed, BH-9 P3, BH-10 P3 |
 | Result receipts | up to 8 | explicit | unchanged | none |
 

@@ -1,9 +1,22 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { Controller } from './controller.ts';
+import { BridgeSession, type Options as BridgeOptions } from './bridge-worker.ts';
 
-export default function extension(pi: ExtensionAPI) {
+export interface ExtensionOptions { bridge?: BridgeOptions }
+
+// The options seam lets lifecycle tests inject a fake worker; Pi loads the default export with none.
+export function browserHarnessExtension(options: ExtensionOptions = {}) {
+  return (pi: ExtensionAPI) => extension(pi, options);
+}
+
+function extension(pi: ExtensionAPI, options: ExtensionOptions) {
   const sessions = new Map<string, Controller>();
+  // One persistent bridge per Pi session: its Python worker serves that session's actions and is ended on shutdown.
+  const bridges = new Map<string, BridgeSession>();
+  pi.on('session_shutdown', async () => {
+    await Promise.all([...bridges.values()].map(bridge => bridge.close()));
+  });
   pi.registerTool({
     name: 'browser_harness', label: 'Browser Harness',
     description: 'Default local browser control via browser-use/browser-harness. status (default) is read-only and never launches. open creates an owned background tab at an explicit loopback CDP endpoint (default 9333). Other page actions require its tab ID; never targets user tabs or active tabs. inspect returns AX backend node IDs; click/type dispatch input, then verify resulting state. evaluate runs page JavaScript, not Python/shell. screenshot returns a native PNG image; read pages long results. Close only owned tabs. No cloud, telemetry or recordings. Read pi-browser-harness skill for setup/profile rules. Reload loses tab handles; finish/record owned-tab work first.',
@@ -24,7 +37,9 @@ export default function extension(pi: ExtensionAPI) {
       let controller = sessions.get(session);
       if (!controller) {
         if (sessions.size >= 32) throw new Error('32 browser session controllers retained; reload only after finishing/recording existing browser work.');
-        sessions.set(session, controller = new Controller());
+        const bridge = new BridgeSession(options.bridge);
+        bridges.set(session, bridge);
+        sessions.set(session, controller = new Controller((request, signal) => bridge.send(request, signal)));
       }
       const result = await controller.execute(params, signal);
       const content: ({ type: 'text'; text: string } | { type: 'image'; mimeType: string; data: string })[] = [{ type: 'text', text: JSON.stringify(result.value) }];
@@ -33,3 +48,5 @@ export default function extension(pi: ExtensionAPI) {
     },
   });
 }
+
+export default browserHarnessExtension();
