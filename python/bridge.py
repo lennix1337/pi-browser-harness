@@ -98,6 +98,9 @@ def main(request):
 
 def act(request):
     from browser_harness.helpers import cdp, _send, SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS
+    # Upstream's 5s IPC default is too short for awaited page scripts and navigation, and a timeout leaves the
+    # effect uncertain. Stay below the host's 45s deadline so the worker, not the host, reports the slow call.
+    PAGE_ACTION_IPC_RESPONSE_TIMEOUT_SECONDS = 40.0
     action = request["action"]
     if action == "shutdown":
         return _send({"meta": "shutdown"})
@@ -118,7 +121,7 @@ def act(request):
     if action == "close":
         return cdp("Target.closeTarget", targetId=target)
     if action == "navigate":
-        result = call("Page.navigate", url=request["url"])
+        result = call("Page.navigate", _response_timeout=PAGE_ACTION_IPC_RESPONSE_TIMEOUT_SECONDS, url=request["url"])
         if result.get("errorText"):
             raise RuntimeError(result["errorText"])
         return result
@@ -130,7 +133,7 @@ def act(request):
     if action == "screenshot":
         return call("Page.captureScreenshot", _response_timeout=SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS, format="png", captureBeyondViewport=False)
     if action == "evaluate":
-        result = call("Runtime.evaluate", expression=request["expression"], returnByValue=True, awaitPromise=True)
+        result = call("Runtime.evaluate", _response_timeout=PAGE_ACTION_IPC_RESPONSE_TIMEOUT_SECONDS, expression=request["expression"], returnByValue=True, awaitPromise=True)
         if "exceptionDetails" in result:
             raise RuntimeError("JavaScript failed: " + result["exceptionDetails"].get("text", "exception"))
         remote = result.get("result", {})

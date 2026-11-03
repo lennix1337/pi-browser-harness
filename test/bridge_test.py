@@ -31,6 +31,24 @@ class Boundaries(unittest.TestCase):
             self.assertEqual(params["_response_timeout"], helpers.SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS)
             self.assertEqual(len(calls), 1)
 
+    def test_slow_page_actions_get_a_longer_ipc_budget_than_the_5s_default(self):
+        # evaluate (awaited promises) and navigate routinely outlast the 5s daemon default; a timeout there
+        # leaves the effect uncertain even though the page was still working.
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {"BH_HOME": root, "PI_BROWSER_HARNESS_HOME": root}):
+            from browser_harness import admin, helpers
+            for action, extra, method in [("evaluate", {"expression": "1"}, "Runtime.evaluate"), ("navigate", {"url": "about:blank"}, "Page.navigate")]:
+                with self.subTest(action=action):
+                    calls = []
+                    def cdp(m, **params):
+                        calls.append((m, params))
+                        return {"result": {"value": 1}}
+                    with patch.object(bridge, "build_opener") as opener, patch.object(admin, "ensure_daemon"), patch.object(helpers, "cdp", cdp):
+                        opener.return_value.open.return_value = version_response()
+                        bridge.main({"action": action, "endpoint": ENDPOINT, "target": "owned", "session": "s", **extra})
+                    self.assertEqual(calls[0][0], method)
+                    self.assertGreater(calls[0][1]["_response_timeout"], helpers.DEFAULT_IPC_RESPONSE_TIMEOUT_SECONDS)
+                    self.assertLess(calls[0][1]["_response_timeout"], 45)
+
     def test_local_endpoint(self):
         for url in ["https://127.0.0.1:9222", "http://example.com", "http://user:password@127.0.0.1:9222", "http://127.0.0.1:9222/path", "http://127.0.0.1:9222/?q=1", "http://127.0.0.1:9222/#x"]:
             with self.subTest(url=url), self.assertRaises(ValueError):
