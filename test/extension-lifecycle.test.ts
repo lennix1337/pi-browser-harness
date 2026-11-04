@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,12 +29,17 @@ test('session_shutdown ends the session worker and waits until it exited', async
   const log = join(dir, 'worker.log');
   process.env.FAKE_LOG = log;
   try {
-    const { handlers, tool } = loadExtension({ bridge: { command: { python: process.execPath, args: [fixture] }, closeGraceMs: 2000 } });
+    const used = join(dir, 'last-used');
+    const { handlers, tool } = loadExtension({ bridge: { command: { python: process.execPath, args: [fixture] }, closeGraceMs: 2000 },
+      idle: { minutes: 0, activity: used, record: join(dir, 'browser.json') } });
     const ctx = { sessionManager: { getSessionId: () => 'session-1' } };
+    await tool.execute('call-0', { action: 'status' }, undefined, undefined, ctx);
+    assert.equal(existsSync(used), false, 'status is a read and does not keep the browser alive');
     const first = await tool.execute('call-1', { action: 'open', endpoint: 'http://127.0.0.1:9333' }, undefined, undefined, ctx);
     const second = await tool.execute('call-2', { action: 'open', endpoint: 'http://127.0.0.1:9333' }, undefined, undefined, ctx);
     assert.equal(first.isError, false);
     assert.equal(second.isError, false);
+    assert.ok(Date.now() - statSync(used).mtimeMs < 60_000, 'a page action restarts the idle clock');
 
     const pids = readFileSync(log, 'utf8').split('\n').filter(line => line.startsWith('pid ')).map(line => Number(line.slice(4)));
     assert.equal(pids.length, 1, 'two actions of one session share one persistent worker');

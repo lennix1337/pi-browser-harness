@@ -22,6 +22,8 @@ npm run browser -- stop             # somente a instância própria identificada
 
 O launcher imprime um endpoint de porta dinâmica. Passe esse endpoint em `browser_harness({action:"open",endpoint:"http://127.0.0.1:PORT",url:"https://example.com"})`. `status` da ferramenta não inicia conexão/navegador. `PI_BROWSER_HARNESS_CDP_URL` pode configurar o endpoint padrão; não confunda a porta com comprovação do perfil. `PI_BROWSER_HARNESS_EXECUTABLE` seleciona um executável instalado, `PI_BROWSER_HARNESS_HOME` muda a pasta de estado/capturas (padrão: `~/.cache/pi-browser-harness`).
 
+O navegador isolado fecha sozinho depois de 30 minutos sem nenhuma ação de página (`open`, `navigate`, `click`...; `status` e `read` não contam). A extensão confere a cada minuto, fecha só a instância registrada em `browser.json` cuja identidade confere, com o mesmo fechamento verificado do `stop`, e mantém o perfil. `PI_BROWSER_HARNESS_IDLE_MINUTES` muda o prazo; `0` desliga.
+
 ## Padrão de uso
 
 Leia [a skill](skills/pi-browser-harness/SKILL.md) para o fluxo e regras DentAI. Use **Code Mode** para agrupar I/O independente ou combinar aquisição e cálculo já conhecido; use **REPL** para cálculo puro com estado entre etapas dependentes; use **Browser Harness** quando precisa interagir com o navegador ou renderização JS. Pesquisa/leitura pública simples continua nas ferramentas web.

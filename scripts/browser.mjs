@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
 const home = process.env.PI_BROWSER_HARNESS_HOME ?? join(homedir(), '.cache', 'pi-browser-harness');
-const record = join(home, 'browser.json');
+export const record = join(home, 'browser.json');
+/** Touched by every browser_harness page action; its mtime is the browser's last use. */
+export const activity = join(home, 'last-used');
 export async function version(endpoint) {
   const res = await fetch(endpoint + '/json/version', { signal: AbortSignal.timeout(1500), redirect: 'error' });
   if (!res.ok) throw new Error('CDP version HTTP ' + res.status);
@@ -131,6 +133,30 @@ async function stop() {
   await waitForClosed(saved.endpoint);
   unlinkSync(record);
   return { status: 'closed', profileRetained: saved.profile };
+}
+export function touch(file = activity) {
+  mkdirSync(join(file, '..'), { recursive: true });
+  writeFileSync(file, String(Date.now()));
+}
+const mtime = file => { try { return statSync(file).mtimeMs; } catch { return 0; } };
+/**
+ * Closes the recorded browser once nothing used it for `idleMs`: the launch record's mtime counts as a use, so a
+ * browser started and never driven gets the full window too. Only the browser whose identity matches the record is
+ * closed, with the same verified closure as `stop`; `0` disables it.
+ */
+export async function closeIdle(file = record, used = activity, idleMs, io = {}) {
+  const { now = Date.now(), probe = version, close = closeConnection, closed = waitForClosed } = io;
+  if (!idleMs) return { status: 'disabled' };
+  const { saved, current, gone } = await recordedBrowser(file, probe);
+  if (!saved) return { status: 'not_started' };
+  if (gone) return { status: 'not_running' };
+  const idle = now - Math.max(mtime(file), mtime(used));
+  if (idle < idleMs) return { status: 'in_use', idleMs: idle };
+  if (current.webSocketDebuggerUrl !== saved.ws) return { status: 'refused', message: 'Browser identity mismatch; not closed.' };
+  await close(saved.ws);
+  await closed(saved.endpoint); // same proof as stop: the endpoint refuses connections
+  unlinkSync(file);
+  return { status: 'closed_idle', idleMinutes: Math.round(idle / 60000), profileRetained: saved.profile };
 }
 
 if (process.argv[1] && resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase()) {

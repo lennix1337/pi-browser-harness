@@ -13,11 +13,13 @@ const mutants = [
   ['concurrency', 'src/controller.ts', 'if (this.busy)', 'if (false)'],
   ['paging-offset', 'src/controller.ts', 'if (!Number.isInteger(offset) || offset < 0 || offset > value.length || !Number.isInteger(limit) || limit < 1 || limit > 12000)', 'if (false)'],
   ['shutdown-close', 'src/index.ts', 'await Promise.all([...bridges.values()].map(bridge => bridge.close()));', '', 'test/extension-lifecycle.test.ts'],
+  ['idle-window', 'scripts/browser.mjs', "if (idle < idleMs) return { status: 'in_use', idleMs: idle };", '', 'test/browser.test.mjs'],
+  ['idle-reads-count', 'src/index.ts', "const busy = params.action !== undefined && !['status', 'read'].includes(params.action);", 'const busy = true;', 'test/extension-lifecycle.test.ts'],
 ];
 for (const [name, file, before, after, testFile = 'test/controller.test.ts'] of mutants) {
   const home = mkdtempSync(join(tmpdir(), 'pi-browser-mutant-'));
   try {
-    for (const dir of ['src', 'test']) cpSync(join(root, dir), join(home, dir), { recursive: true });
+    for (const dir of ['src', 'test', 'scripts']) cpSync(join(root, dir), join(home, dir), { recursive: true });
     writeFileSync(join(home, 'package.json'), '{"type":"module"}');
     symlinkSync(join(root, 'node_modules'), join(home, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
     const path = join(home, file), source = readFileSync(path, 'utf8');

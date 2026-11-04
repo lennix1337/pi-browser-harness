@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { closeConnection, waitForVersion, waitForClosed, executable, recordedBrowser } from '../scripts/browser.mjs';
+import { closeConnection, waitForVersion, waitForClosed, executable, recordedBrowser, closeIdle, touch } from '../scripts/browser.mjs';
 
 test('explicit browser choice is respected; a missing executable never silently falls back', () => {
   assert.equal(executable('explicit-chrome', path => path === 'explicit-chrome'), 'explicit-chrome');
@@ -64,4 +64,35 @@ test('a record whose endpoint refuses connections is stale and removed; other pr
   const stale = await recordedBrowser(file, async () => { throw new Error('fetch failed', { cause: { code: 'ECONNREFUSED' } }); });
   assert.deepEqual(stale, { saved, gone: true });
   assert.equal(existsSync(file), false, 'the stale record is removed so start and stop are not blocked forever');
+});
+
+test('an idle recorded browser is closed after the idle window; recent use, another identity or zero keep it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'browser-idle-'));
+  const file = join(dir, 'browser.json'), activity = join(dir, 'last-used');
+  const saved = { endpoint: 'http://127.0.0.1:1', ws: 'ws://127.0.0.1:1/browser/own', profile: 'p' };
+  const minute = 60_000, now = Date.now();
+  let closes = 0;
+  const io = { now, probe: async () => ({ webSocketDebuggerUrl: saved.ws }), close: async ws => { assert.equal(ws, saved.ws); closes++; }, closed: async () => {} };
+  assert.equal((await closeIdle(file, activity, 30 * minute, io)).status, 'not_started');
+  writeFileSync(file, JSON.stringify(saved));
+  const old = (now - 40 * minute) / 1000;
+  utimesSync(file, old, old);
+  touch(activity);
+  assert.equal((await closeIdle(file, activity, 30 * minute, io)).status, 'in_use', 'a recent action keeps the browser');
+  utimesSync(activity, old, old);
+  assert.equal((await closeIdle(file, activity, 0, io)).status, 'disabled');
+  const other = await closeIdle(file, activity, 30 * minute, { ...io, probe: async () => ({ webSocketDebuggerUrl: 'ws://127.0.0.1:1/browser/other' }) });
+  assert.equal(other.status, 'refused', 'a browser with another identity at that port is never closed');
+  assert.equal(closes, 0);
+  const result = await closeIdle(file, activity, 30 * minute, io);
+  assert.equal(result.status, 'closed_idle');
+  assert.equal(closes, 1);
+  assert.equal(existsSync(file), false, 'the record goes with the closed browser');
+});
+test('a browser started but never used counts its idle time from the launch record', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'browser-idle-'));
+  const file = join(dir, 'browser.json');
+  writeFileSync(file, JSON.stringify({ endpoint: 'http://127.0.0.1:1', ws: 'ws://x/own', profile: 'p' }));
+  const io = { now: Date.now(), probe: async () => ({ webSocketDebuggerUrl: 'ws://x/own' }), close: async () => assert.fail('fresh launch must stay'), closed: async () => {} };
+  assert.equal((await closeIdle(file, join(dir, 'absent'), 30 * 60_000, io)).status, 'in_use');
 });
