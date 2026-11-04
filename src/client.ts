@@ -53,9 +53,15 @@ export async function bridge(request: Request, signal?: AbortSignal): Promise<an
   });
 }
 
+/** Whether a CDP origin still answers: one GET of /json/version, never a page attach. */
+export async function cdpAlive(origin: string, timeoutMs = 2000): Promise<boolean> {
+  try { return (await fetch(`${origin}/json/version`, { signal: AbortSignal.timeout(timeoutMs) })).ok; }
+  catch { return false; }
+}
+
 export function installation() {
   return { installed: existsSync(python), version: 'browser-harness 0.1.13',
     defaultEndpoint: endpoint(), runtimeHome: process.env.PI_BROWSER_HARNESS_HOME ?? join(homedir(), '.cache', 'pi-browser-harness'),
     setup: `cd ${root} && npm run setup`, start: `cd ${root} && npm run browser -- start`,
-    scope: 'Owned tabs only; status does not connect or launch. Local CDP. No cloud, telemetry or recordings.' };
+    scope: 'Owned tabs only; status never attaches or launches (it only asks each owned tab\'s browser /json/version). Local CDP. No cloud, telemetry or recordings.' };
 }
