@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { bridge, endpoint, installation, type Request } from './client.ts';
+import { bridge, cdpAlive, endpoint, installation, type Request } from './client.ts';
 
 export type Args = { action?: string; endpoint?: string; tab?: string; url?: string; expression?: string;
   node?: number; text?: string; receipt?: string; offset?: number; limit?: number };
 export type Transport = (request: Request, signal?: AbortSignal) => Promise<any>;
+export type Probe = (origin: string) => Promise<boolean>;
 const fields: Record<string, string[]> = {
   status: ['action'], open: ['action', 'endpoint', 'url'], navigate: ['action', 'tab', 'url'],
   inspect: ['action', 'tab'], evaluate: ['action', 'tab', 'expression'], screenshot: ['action', 'tab'],
@@ -23,7 +24,15 @@ export class Controller {
   private tabs = new Map<string, { endpoint: string; target: string; session: string }>();
   private receipts = new Map<string, string>();
   private busy = false;
-  constructor(private send: Transport = bridge) {}
+  constructor(private send: Transport = bridge, private alive: Probe = cdpAlive) {}
+
+  /** Liveness of each browser that owns a tab; absent without tabs, so a bare status stays offline. */
+  private async browsers() {
+    const origins = [...new Set([...this.tabs.values()].map(tab => tab.endpoint))];
+    if (!origins.length) return undefined;
+    const states = await Promise.all(origins.map(async origin => [origin, await this.alive(origin) ? 'up' : 'unreachable'] as const));
+    return Object.fromEntries(states);
+  }
 
   private project(result: unknown, extra: Record<string, unknown> = {}) {
     const full = JSON.stringify(result);
@@ -48,7 +57,7 @@ export class Controller {
     let dispatched = false, acquired = false;
     try {
       if (!fields[action] || Object.keys(args).some(key => !fields[action].includes(key))) throw new Error('Unknown action/fields. Start with status; page actions require an owned tab ID.');
-      if (action === 'status') return { value: { status: 'ok', ...installation(), tabs: [...this.tabs.keys()] }, isError: false };
+      if (action === 'status') return { value: { status: 'ok', ...installation(), tabs: [...this.tabs.keys()], browsers: await this.browsers() }, isError: false };
       if (action === 'read') return { value: { status: 'ok', ...this.read(args) }, isError: false };
       if (this.busy) throw new Error('Browser action already in progress for this session. Serialize interactions.');
       if (signal?.aborted) throw new Error('Aborted before dispatch');
@@ -96,10 +105,15 @@ export class Controller {
         this.tabs.delete(args.tab!);
         return { value: { status: 'ok', tab: args.tab, note: 'The browser no longer had this tab; ownership released.' }, isError: false };
       }
+      // A browser that stopped answering explains a timeout better than any retry: its tabs are gone with it.
+      const origin = dispatched ? this.tabs.get(args.tab ?? '')?.endpoint ?? (action === 'open' ? endpoint(args.endpoint) : undefined) : undefined;
+      const dead = origin !== undefined && !await this.alive(origin);
       return { value: { status: dispatched ? 'outcome_uncertain' : 'invalid_input',
         message: error instanceof Error ? error.message.slice(0, 500) : 'Browser request failed.',
+        ...(dead ? { browser: 'unreachable' } : {}),
         tabs: [...this.tabs.keys()], next: { tool: 'browser_harness', arguments: { action: 'status' } },
-        recovery: dispatched ? 'Do not replay an effect. Read the owned tab state first; closed/stale sessions never retarget.' : 'Correct input before executing.' }, isError: true };
+        recovery: dead ? `The browser at ${origin} does not answer: it closed or crashed, and its tabs went with it. Start the isolated browser again (${installation().start}), open a new tab on the endpoint it prints, and read the page state there; do not replay effects.`
+          : dispatched ? 'Do not replay an effect. Read the owned tab state first; closed/stale sessions never retarget.' : 'Correct input before executing.' }, isError: true };
     } finally { if (acquired) this.busy = false; }
   }
 }

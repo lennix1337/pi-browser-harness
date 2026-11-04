@@ -150,3 +150,33 @@ test('a tab the browser no longer has is released on close instead of staying ow
   assert.equal((await other.execute({ action: 'close', tab: 't' })).value.status, 'outcome_uncertain');
   assert.deepEqual((await other.execute({})).value.tabs, ['t'], 'an uncertain close keeps the handle');
 });
+// 03/11: the isolated browser on :9333 died mid-session. Each later evaluate waited 40 s, came back
+// outcome_uncertain with "next: status", and status still answered ok with the dead tabs, so the agent
+// retried for 20 minutes until a curl of /json/version showed nothing listened there.
+test('a timed-out call says when its browser no longer answers, and status shows it too', async () => {
+  const probed: string[] = [];
+  let up = false;
+  const controller = new Controller(async request => {
+    if (request.action === 'open') return { target: 't', session: 's' };
+    throw new Error('Deadline exceeded; external outcome uncertain. Inspect before retrying.');
+  }, async origin => { probed.push(origin); return up; });
+  await controller.execute({ action: 'open', endpoint: 'http://127.0.0.1:9444' });
+  const dead = await controller.execute({ action: 'evaluate', tab: 't', expression: 'document.title' });
+  assert.equal(dead.value.status, 'outcome_uncertain');
+  assert.equal(dead.value.browser, 'unreachable');
+  assert.match(dead.value.recovery, /http:\/\/127\.0\.0\.1:9444 does not answer.*npm run browser -- start/);
+  assert.deepEqual(probed, ['http://127.0.0.1:9444']);
+  const status = await controller.execute({ action: 'status' });
+  assert.deepEqual(status.value.browsers, { 'http://127.0.0.1:9444': 'unreachable' });
+  up = true;
+  const slow = await controller.execute({ action: 'evaluate', tab: 't', expression: 'document.title' });
+  assert.equal(slow.value.browser, undefined);
+  assert.match(slow.value.recovery, /^Do not replay an effect/);
+  assert.deepEqual((await controller.execute({ action: 'status' })).value.browsers, { 'http://127.0.0.1:9444': 'up' });
+});
+test('status without owned tabs probes nothing', async () => {
+  const probed: string[] = [];
+  const controller = new Controller(async () => ({}), async origin => { probed.push(origin); return true; });
+  assert.equal((await controller.execute({})).value.browsers, undefined);
+  assert.deepEqual(probed, []);
+});
