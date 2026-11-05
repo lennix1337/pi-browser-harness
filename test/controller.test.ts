@@ -17,7 +17,7 @@ function fixture() {
 test('status is read-only; rejects unowned tabs and invalid actions before transport', async () => {
   const { controller, calls } = fixture();
   assert.equal((await controller.execute({})).isError, false);
-  for (const action of ['navigate', 'inspect', 'click', 'type', 'evaluate', 'screenshot', 'close']) {
+  for (const action of ['navigate', 'inspect', 'network', 'click', 'type', 'evaluate', 'screenshot', 'close']) {
     const response = await controller.execute({ action, tab: 'personal' });
     assert.equal(response.isError, true);
     assert.equal(response.value.status, 'invalid_input');
@@ -40,10 +40,15 @@ test('ownership, endpoint and explicit session round-trip on every page action; 
   await controller.execute({ action: 'inspect', tab: 'owned' });
   assert.equal(calls[2].target, 'owned'); assert.equal(calls[2].session, 'explicit-session');
   assert.equal(calls[2].endpoint, 'http://127.0.0.1:9444');
+  await controller.execute({ action: 'network', tab: 'owned' });
+  assert.equal(calls[3].action, 'network');
+  assert.equal(calls[3].target, 'owned'); assert.equal(calls[3].session, 'explicit-session');
+  assert.equal(calls[3].endpoint, 'http://127.0.0.1:9444');
   const image = await controller.execute({ action: 'screenshot', tab: 'owned' });
   assert.equal(Buffer.from(image.image!, 'base64').toString(), 'PNG');
   assert.equal((await controller.execute({ action: 'close', tab: 'owned' })).isError, false);
   assert.equal((await controller.execute({ action: 'inspect', tab: 'owned' })).isError, true);
+  assert.equal((await controller.execute({ action: 'network', tab: 'owned' })).isError, true);
 });
 test('failed navigation preserves created identity; uncertain effects never retried', async () => {
   let calls = 0;

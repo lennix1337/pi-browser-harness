@@ -56,6 +56,53 @@ def runtime_for(endpoint):
     return home / hashlib.sha256(endpoint.encode()).hexdigest()[:16]
 
 
+def network_file(endpoint, session):
+    digest = hashlib.sha256(session.encode()).hexdigest()[:16]
+    return runtime_for(endpoint) / f"network-{digest}.json"
+
+
+def apply_network_event(entries, event):
+    method, params = event.get("method", ""), event.get("params") or {}
+    rid = str(params.get("requestId", ""))
+    if not rid:
+        return
+    entry = entries.setdefault(rid, {"requestId": rid, "method": "", "url": "", "resourceType": ""})
+    if params.get("type"):
+        entry["resourceType"] = params["type"]
+    if method == "Network.requestWillBeSent":
+        req = params.get("request") or {}
+        entry.update(method=req.get("method", entry["method"]), url=req.get("url", entry["url"]))
+        if isinstance(req.get("postData"), str):
+            entry["postData"] = req["postData"][:4096]
+    elif method == "Network.responseReceived":
+        resp = params.get("response") or {}
+        entry.update(url=entry["url"] or resp.get("url", ""), status=resp.get("status"), mimeType=resp.get("mimeType", ""))
+    elif method == "Network.loadingFailed":
+        entry["errorText"] = params.get("errorText", "loadingFailed")
+
+
+def load_network_entries(path):
+    if not path.exists():
+        return {}
+    return {item["requestId"]: item for item in json.loads(path.read_text(encoding="utf-8")) if "requestId" in item}
+
+
+def collect_network(endpoint, session, events):
+    grouped = {}
+    for event in events:
+        sid = event.get("session_id")
+        if sid and str(event.get("method", "")).startswith("Network."):
+            grouped.setdefault(sid, []).append(event)
+    with startup_lock(runtime_for(endpoint) / "startup.lock"):
+        for sid, batch in grouped.items():
+            path = network_file(endpoint, sid)
+            entries = load_network_entries(path)
+            for event in batch:
+                apply_network_event(entries, event)
+            path.write_text(json.dumps(list(entries.values())[-256:], ensure_ascii=True), encoding="utf-8")
+        return list(load_network_entries(network_file(endpoint, session)).values())
+
+
 def configure(value):
     """Validate the endpoint and set the upstream environment. Must run before any upstream import."""
     endpoint = local_endpoint(value)
@@ -107,6 +154,7 @@ def act(request):
     if action == "open":
         target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
         session = cdp("Target.attachToTarget", targetId=target, flatten=True)["sessionId"]
+        cdp("Network.enable", session_id=session)
         # Return identity BEFORE navigating. The host records ownership before any further effects.
         return {"target": target, "session": session}
     target, session = request["target"], request["session"]
@@ -119,7 +167,12 @@ def act(request):
         except Exception:
             return ""
     if action == "close":
-        return cdp("Target.closeTarget", targetId=target)
+        closed = cdp("Target.closeTarget", targetId=target)
+        network_file(local_endpoint(request["endpoint"]), session).unlink(missing_ok=True)
+        return closed
+    if action == "network":
+        requests = collect_network(local_endpoint(request["endpoint"]), session, _send({"meta": "drain_events"}).get("events", []))
+        return {"url": page_url(), "requests": requests, "totalRequests": len(requests)}
     if action == "navigate":
         result = call("Page.navigate", _response_timeout=PAGE_ACTION_IPC_RESPONSE_TIMEOUT_SECONDS, url=request["url"])
         if result.get("errorText"):

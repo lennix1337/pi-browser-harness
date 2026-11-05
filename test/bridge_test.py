@@ -69,6 +69,61 @@ class Boundaries(unittest.TestCase):
             bridge.NoRedirect().redirect_request(None, None, 302, "Found", {}, "https://example.com/")
 
 
+class Network(unittest.TestCase):
+    def test_open_enables_network_and_network_action_isolates_requests_by_session(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {"BH_HOME": root, "PI_BROWSER_HARNESS_HOME": root}):
+            from browser_harness import admin, helpers
+            calls = []
+            def cdp(method, **params):
+                calls.append((method, params))
+                if method == "Target.createTarget":
+                    return {"targetId": "owned-tab"}
+                if method == "Target.attachToTarget":
+                    return {"sessionId": "session-a"}
+                if method == "Target.getTargetInfo":
+                    return {"targetInfo": {"url": "http://127.0.0.1:8080/game"}}
+                return {}
+            events = [
+                {"session_id": "session-a", "method": "Network.requestWillBeSent", "params": {
+                    "requestId": "r1", "type": "Fetch",
+                    "request": {"method": "POST", "url": "http://127.0.0.1:8080/save", "postData": '{"ouro":100}'},
+                }},
+                {"session_id": "session-b", "method": "Network.requestWillBeSent", "params": {
+                    "requestId": "r2", "type": "Document",
+                    "request": {"method": "GET", "url": "http://127.0.0.1:8080/sentinel"},
+                }},
+                {"session_id": "session-a", "method": "Network.responseReceived", "params": {
+                    "requestId": "r1", "type": "Fetch",
+                    "response": {"url": "http://127.0.0.1:8080/save", "status": 200, "mimeType": "application/json"},
+                }},
+            ]
+            def send(payload, **kwargs):
+                if payload == {"meta": "drain_events"}:
+                    drained = list(events)
+                    events.clear()
+                    return {"events": drained}
+                return {}
+            with patch.object(bridge, "build_opener") as opener, patch.object(admin, "ensure_daemon"), \
+                    patch.object(helpers, "cdp", cdp), patch.object(helpers, "_send", send):
+                opener.return_value.open.side_effect = lambda *a, **kw: version_response()
+                opened = bridge.main({"action": "open", "endpoint": ENDPOINT})
+                self.assertEqual(opened, {"target": "owned-tab", "session": "session-a"})
+                self.assertEqual(calls[2], ("Network.enable", {"session_id": "session-a"}))
+                net_a = bridge.main({"action": "network", "endpoint": ENDPOINT, "target": "owned-tab", "session": "session-a"})
+                self.assertEqual(net_a["url"], "http://127.0.0.1:8080/game")
+                self.assertEqual(net_a["totalRequests"], 1)
+                self.assertEqual(net_a["requests"], [{
+                    "requestId": "r1", "method": "POST", "url": "http://127.0.0.1:8080/save",
+                    "resourceType": "Fetch", "postData": '{"ouro":100}', "status": 200, "mimeType": "application/json",
+                }])
+                net_b = bridge.main({"action": "network", "endpoint": ENDPOINT, "target": "other-tab", "session": "session-b"})
+                self.assertEqual(net_b["totalRequests"], 1)
+                self.assertEqual(net_b["requests"][0]["url"], "http://127.0.0.1:8080/sentinel")
+                bridge.main({"action": "close", "endpoint": ENDPOINT, "target": "owned-tab", "session": "session-a"})
+                after_close = bridge.main({"action": "network", "endpoint": ENDPOINT, "target": "owned-tab", "session": "session-a"})
+                self.assertEqual(after_close["requests"], [])
+
+
 ENDPOINT = "http://127.0.0.1:9333"
 
 def version_response():

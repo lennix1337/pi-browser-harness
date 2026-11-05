@@ -23,6 +23,7 @@ browser_harness({action:"inspect", tab:"RETURNED_ID"})
 browser_harness({action:"click", tab:"RETURNED_ID", node:123})
 browser_harness({action:"type", tab:"RETURNED_ID", node:456, text:"Example"})
 browser_harness({action:"evaluate", tab:"RETURNED_ID", expression:"({url:location.href,title:document.title,ready:document.readyState})"})
+browser_harness({action:"network", tab:"RETURNED_ID"})
 browser_harness({action:"screenshot", tab:"RETURNED_ID"})
 browser_harness({action:"close", tab:"RETURNED_ID"})
 ```
