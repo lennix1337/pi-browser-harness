@@ -1,6 +1,6 @@
 # Pi Browser Harness
 
-Controle nativo de navegador no Pi, usando [browser-use/browser-harness](https://github.com/browser-use/browser-harness) **0.1.13**. Ferramenta `browser_harness` e skill `pi-browser-harness`: abrir, navegar, inspecionar acessibilidade, clicar, digitar, executar JS da página, capturar PNG e fechar abas próprias.
+Controle nativo de navegador no Pi, usando [browser-use/browser-harness](https://github.com/browser-use/browser-harness) **0.1.13**. Ferramenta `browser_harness` e skill `pi-browser-harness`: abrir, navegar, inspecionar acessibilidade, inspecionar requisições de rede da aba (`network`), clicar, digitar, executar JS da página, capturar PNG e fechar abas próprias.
 
 ## Instalação
 

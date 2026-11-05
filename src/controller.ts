@@ -7,7 +7,7 @@ export type Transport = (request: Request, signal?: AbortSignal) => Promise<any>
 export type Probe = (origin: string) => Promise<boolean>;
 const fields: Record<string, string[]> = {
   status: ['action'], open: ['action', 'endpoint', 'url'], navigate: ['action', 'tab', 'url'],
-  inspect: ['action', 'tab'], evaluate: ['action', 'tab', 'expression'], screenshot: ['action', 'tab'],
+  inspect: ['action', 'tab'], network: ['action', 'tab'], evaluate: ['action', 'tab', 'expression'], screenshot: ['action', 'tab'],
   click: ['action', 'tab', 'node'], type: ['action', 'tab', 'node', 'text'], close: ['action', 'tab'],
   read: ['action', 'receipt', 'offset', 'limit'],
 };

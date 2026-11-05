@@ -57,6 +57,10 @@ try {
     expression: `(async()=>{for(let i=0;i<100;i++){const text=document.querySelector('#result').innerText;if(text.startsWith('Saved'))return text;await new Promise(r=>setTimeout(r,30));}throw Error('Result not observed')})()` })).details.result.value;
   assert.equal(visible, 'Saved through browser: Pi browser harness');
   assert.equal(writes, 1, 'exactly one server-side write, no replay');
+  const network = (await call('task-owner', { action: 'network', tab: mainTab })).details;
+  assert.equal(network.url, base + '/form', 'network reports the page the tab shows');
+  assert.ok(network.result.requests.some((req: any) => req.method === 'POST' && req.url === base + '/save' && req.status === 200), 'network observes the owned tab POST');
+  assert.ok(network.result.requests.every((req: any) => !String(req.url).endsWith('/sentinel')), 'network stays isolated to the owned tab');
   const image = await call('task-owner', { action: 'screenshot', tab: mainTab });
   const png = image.content.find((block: any) => block.type === 'image');
   assert.ok(png && png.type === 'image');
