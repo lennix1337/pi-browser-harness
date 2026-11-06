@@ -116,6 +116,10 @@ class Network(unittest.TestCase):
                     "requestId": "r1", "method": "POST", "url": "http://127.0.0.1:8080/save",
                     "resourceType": "Fetch", "postData": '{"ouro":100}', "status": 200, "mimeType": "application/json",
                 }])
+                filtered = bridge.main({"action": "network", "endpoint": ENDPOINT, "target": "owned-tab", "session": "session-a", "filter": {"method": "post", "urlContains": "/save", "resourceType": "Fetch", "status": 200}})
+                self.assertEqual(filtered["totalRequests"], 1)
+                filtered_out = bridge.main({"action": "network", "endpoint": ENDPOINT, "target": "owned-tab", "session": "session-a", "filter": {"method": "POST", "status": 409}})
+                self.assertEqual(filtered_out["requests"], [])
                 net_b = bridge.main({"action": "network", "endpoint": ENDPOINT, "target": "other-tab", "session": "session-b"})
                 self.assertEqual(net_b["totalRequests"], 1)
                 self.assertEqual(net_b["requests"][0]["url"], "http://127.0.0.1:8080/sentinel")

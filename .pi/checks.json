@@ -3,8 +3,8 @@
   "checks": {
     "typecheck": { "argv": ["node", "node_modules/typescript/bin/tsc", "--noEmit"], "timeoutMs": 60000, "description": "Strict TypeScript, no inference/network" },
     "unit": { "argv": ["node", "--import", "tsx", "--test", "test/controller.test.ts", "test/discovery.test.ts", "test/browser.test.mjs", "test/bridge-worker.test.ts", "test/extension-lifecycle.test.ts"], "timeoutMs": 60000, "description": "Controller boundaries, persistent bridge worker lifecycle, session shutdown and fresh native Pi discovery, offline" },
-    "mutations": { "argv": ["node", "test/mutations.mjs"], "timeoutMs": 60000, "description": "Eleven disposable ownership/session/endpoint/replay/closure/URL/concurrency/paging/shutdown/idle-window/idle-reads mutants must fail assertions" },
-    "python": { "argv": ["uv", "run", "--frozen", "--offline", "python", "-m", "unittest", "discover", "-s", "test", "-p", "*_test.py"], "timeoutMs": 30000, "description": "Python endpoint/OS-lock/redirect boundaries, offline" },
-    "browser-smoke": { "argv": ["node", "--import", "tsx", "test/browser-smoke.ts"], "timeoutMs": 120000, "description": "Fresh isolated local browser: native Pi tool -> upstream daemon -> CDP -> visible form result, screenshot, owned-tab cleanup. No login/cloud/provider." }
+    "mutations": { "argv": ["node", "test/mutations.mjs"], "timeoutMs": 60000, "description": "Disposable ownership/session/endpoint/replay/closure/URL/concurrency/paging/shutdown/idle and request-editor boundary mutants must fail assertions" },
+    "python": { "argv": ["uv", "run", "--frozen", "--offline", "python", "-m", "unittest", "discover", "-s", "test", "-p", "*_test.py"], "timeoutMs": 30000, "description": "Python endpoint/OS-lock/redirect boundaries, request rules, CDP session routing and failure cleanup, offline" },
+    "browser-smoke": { "argv": ["node", "--import", "tsx", "test/browser-smoke.ts"], "timeoutMs": 120000, "description": "Fresh isolated local browser: native tool -> CDP -> form and edited requests verified by local server; limits, isolation, stop, EOF, worker loss and cleanup. No login/cloud/provider." }
   }
 }

@@ -1,6 +1,6 @@
 ---
 name: pi-browser-harness
-description: "Default browser control for Pi: open websites, click, type, inspect JS-rendered pages, screenshot, test web apps or work in authenticated browser sessions using browser-use/browser-harness. Includes isolated local browser setup, owned-tab safety and connection recovery."
+description: "Default browser control for Pi: open websites, click, type, inspect JS-rendered pages, screenshot, test web apps or work in authenticated browser sessions using browser-use/browser-harness. Includes request interception/editing, network filters, isolated setup, owned-tab safety and connection recovery."
 ---
 
 # Pi Browser Harness
@@ -35,6 +35,12 @@ browser_harness({action:"close", tab:"RETURNED_ID"})
 - Tabs must have been created by `open` in this Pi session. All page calls bind an explicit CDP session, not the foreground/current tab; another agent or the user can change the active tab without retargeting actions. Close only owned IDs. Leave a tab open only if the user needs it or closing could discard a draft; record its ID and reason.
 - A timeout, abort or transport failure is `outcome_uncertain`, never automatic permission to repeat a click/submit. With `browser: "unreachable"` the browser closed or crashed and its tabs are gone: start it again with `npm run browser -- start` and open a new tab on the printed endpoint instead of retrying the old one. Read the known owned tab state first. An open whose navigation fails keeps its created tab ID in `tabs`. A failed/stale explicit CDP session never switches to another tab. Serialize actions within one session; other sessions use their own owned tabs and explicit CDP sessions.
 - Reload/fresh session loses local handles/receipts. Finish or record browser work before reload; the wrapper deliberately cannot adopt arbitrary old/user tabs. The upstream daemon has one infrastructure blank tab per endpoint; it is not a task tab. It stays connected until browser/service shutdown.
+
+## Request interception and editing
+
+For authorized outgoing request edits, use `intercept_start` on an owned tab with `rules:[{match:{urlPattern:"http://127.0.0.1:PORT/api/*",method:"POST"},edit:{headers:{"X-Test":"yes"},postData:'{"name":"edited"}'},maxMatches:1}]`. Then perform the page action once, inspect `intercept_status`, and verify the **server response/resulting state**. Finish with `intercept_stop`; a rule match or `continued` is only CDP dispatch, not server acceptance.
+
+Read [the request editor contract](../../README.md#filtros-interceptação-e-edição) for advanced filters, header deletion, same-origin URL edits, bounds and redacted journals. Rules are automatic, not indefinitely paused requests; they affect future traffic until stopped/exhausted. Chromium Fetch events may label page `fetch()` as `XHR` (check `lastResourceType`), unlike `network`'s `Fetch`. Stop before replacing rules. Worker loss/EOF/close disconnect interception; never automatically reinstall/replay uncertain effects. No third-party account, purchase or game data is a development fixture.
 
 ## Advanced work / recovery
 

@@ -5,6 +5,12 @@ import { spawnSync } from 'node:child_process';
 const root = resolve('.');
 const mutants = [
   ['ownership', 'src/controller.ts', 'if (!tab) throw new Error', 'if (false) throw new Error'],
+  ['intercept-validation', 'src/controller.ts', "if (action === 'intercept_start') validateRules(args.rules);", ''],
+  ['intercept-limit', 'python/interception.py', "self.counts[index] >= rule.get('maxMatches', 1)", 'False', 'test/interception_test.py'],
+  ['intercept-origin', 'python/interception.py', "if 'url' in e and origin(e['url']) != origin(req['url']):", 'if False:', 'test/interception_test.py'],
+  ['intercept-method', 'python/interception.py', "('method' in m and m['method'].upper() != req['method'].upper())", 'False', 'test/interception_test.py'],
+  ['intercept-resource-type', 'python/interception.py', "('resourceType' in m and m['resourceType'] != event.get('resourceType'))", 'False', 'test/interception_test.py'],
+  ['intercept-session', 'python/interception.py', "message.get('method') == 'Fetch.requestPaused' and message.get('sessionId') == self.session", "message.get('method') == 'Fetch.requestPaused'", 'test/interception_test.py'],
   ['explicit-session', 'src/controller.ts', 'request = { action, ...tab, url:', 'request = { action, ...tab, session: undefined, url:'],
   ['endpoint', 'src/client.ts', "!['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)", 'false'],
   ['no-replay', 'src/controller.ts', 'let result = await this.send(request, signal);', 'let result; try { result = await this.send(request, signal); } catch { result = await this.send(request, signal); }'],
@@ -19,13 +25,16 @@ const mutants = [
 for (const [name, file, before, after, testFile = 'test/controller.test.ts'] of mutants) {
   const home = mkdtempSync(join(tmpdir(), 'pi-browser-mutant-'));
   try {
-    for (const dir of ['src', 'test', 'scripts']) cpSync(join(root, dir), join(home, dir), { recursive: true });
+    for (const dir of ['src', 'test', 'scripts', 'python']) cpSync(join(root, dir), join(home, dir), { recursive: true });
     writeFileSync(join(home, 'package.json'), '{"type":"module"}');
     symlinkSync(join(root, 'node_modules'), join(home, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
     const path = join(home, file), source = readFileSync(path, 'utf8');
     if (source.split(before).length !== 2) throw new Error(name + ': ambiguous mutation anchor');
     writeFileSync(path, source.replace(before, after));
-    const result = spawnSync(process.execPath, ['--import', 'tsx', '--test', testFile], { cwd: home, encoding: 'utf8', timeout: 30000 });
+    const pythonTest = testFile.endsWith('.py');
+    const result = pythonTest
+      ? spawnSync(join(root, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'), [testFile], { cwd: home, encoding: 'utf8', timeout: 30000 })
+      : spawnSync(process.execPath, ['--import', 'tsx', '--test', testFile], { cwd: home, encoding: 'utf8', timeout: 30000 });
     const output = result.stdout + result.stderr;
     if (result.status !== 1 || !/AssertionError|ERR_ASSERTION/.test(output)) throw new Error(name + ': not killed by assertion; ' + output.slice(-2000));
     console.log(name + ': killed by assertion');
