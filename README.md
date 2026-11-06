@@ -30,6 +30,28 @@ Leia [a skill](skills/pi-browser-harness/SKILL.md) para o fluxo e regras DentAI.
 
 A primeira operação cria aba própria em segundo plano e retorna seu ID. As operações seguintes usam ID + sessão CDP explícita, nunca a aba ativa. `inspect` retorna IDs backend da árvore AX; `click`/`type` apenas confirmam despacho: valide o resultado com `evaluate`/`inspect`, requisição/servidor quando relevante, e screenshot. Resultados longos têm recibos pagináveis sem reexecutar o efeito (8 resultados, até 1 MiB cada). PNGs preservam a imagem nativa do Pi.
 
+## Filtros, interceptação e edição
+
+`network` filtra observações com `filter: { method, urlContains, resourceType, status }` (AND). Para modificar **requisições futuras**, use regras automáticas na aba própria:
+
+```js
+browser_harness({action:"intercept_start", tab:"RETURNED_ID", rules:[{
+  match:{urlPattern:"http://127.0.0.1:PORT/api/*", method:"POST", urlContains:"/save"},
+  edit:{method:"PUT", headers:{"X-Test":"edited", "X-Remove":null}, postData:'{"name":"example"}'},
+  maxMatches:1
+}]})
+browser_harness({action:"intercept_status", tab:"RETURNED_ID"})
+// Execute the authorized page action, then verify the server response and resulting state.
+browser_harness({action:"intercept_stop", tab:"RETURNED_ID"})
+```
+
+- `match` aceita glob de URL absoluto HTTP(S), trecho de URL, método (sem diferenciar maiúsculas) e `resourceType` CDP. Condições são AND; ganha a primeira regra compatível ainda não esgotada. Em `Fetch.requestPaused`, Chromium pode classificar `fetch()` como **XHR**, enquanto `network` mostra **Fetch**; confira `lastResourceType` no status ou omita essa condição.
+- Até 16 regras/256 KiB. `maxMatches` limita cada regra a 1 por padrão (até 100). Sem repetição de requests passados e sem pausa manual aguardando outra chamada da ferramenta.
+- `edit` substitui método, URL absoluta **da mesma origem**, corpo UTF-8 (`postData`, até 65.536 caracteres, inclusive vazio) e/ou mescla cabeçalhos sem diferenciar maiúsculas; `null` remove. Chromium recalcula tamanho do corpo. Host, Content-Length, Connection e Transfer-Encoding não podem ser editados. `postData` é substituição completa, não merge de JSON.
+- Regras precisam ser paradas antes de substituir. `intercept_status` retorna contagens e até 100 eventos em memória; mostra método, URL sem query/fragmento/credenciais, nomes dos campos e confirmação CDP. **Não inclui valores de cabeçalhos/corpos nem regras**. Caminhos de URL ainda podem conter identificadores: trate os metadados como privados. A captura `network` existente é separada e pode conter dados da requisição.
+- URL de outra origem é ignorada e registrada como `skipped_cross_origin`, preservando a requisição original. Falha de transporte/continuação desconecta a sessão e não repete efeitos. `continued` só confirma despacho CDP, não aceitação pelo servidor.
+- `intercept_stop`, fechamento da aba e EOF/shutdown liberam a conexão CDP dedicada. Morte do worker também desconecta a sessão, liberando Fetch; o próximo worker **não reinstala regras antigas**. Isso é validado no smoke local. O modo Python one-shot recusa `intercept_start`; a ferramenta nativa usa worker persistente.
+
 ## Limites e segurança
 
 - Somente endpoints CDP HTTP de loopback explícitos; sem autodescoberta, inicialização de perfil pessoal ou fallback cloud. O Python verifica também a origem WebSocket anunciada e recusa redirects.
@@ -50,7 +72,7 @@ uv run --frozen --offline python -m unittest discover -s test -p "*_test.py"
 npm run smoke
 ```
 
-As mesmas receitas estão em `.pi/checks.json`. O smoke usa pacote real via `DefaultResourceLoader` → ferramenta nativa → Python upstream → daemon → CDP → formulário HTTP local; verifica texto digitado, um POST, resultado visível, PNG, aba sentinela intacta, recusa de aba alheia e fechamento dos recursos próprios. Sem provedor/modelo. Artefatos ficam fora do Git em `../local-validation/runs/browser-harness/` (ou `PI_BROWSER_HARNESS_EVIDENCE`). Windows/Edge local validado; CI testa Windows/Linux, macOS depende de validação na máquina alvo.
+As mesmas receitas estão em `.pi/checks.json`. O smoke usa pacote real via `DefaultResourceLoader` → ferramenta nativa → Python upstream → daemon → CDP → formulário HTTP local; verifica texto digitado, um POST, resultado visível, PNG, aba sentinela intacta, recusa de aba alheia e fechamento dos recursos próprios. A edição é confirmada pelo servidor local (URL, método, cabeçalhos, corpo Unicode); também cobre filtros, limite de aplicações, URL de outra origem recusada, parada, EOF e morte do worker sem replay. Sem provedor/modelo. Artefatos ficam fora do Git em `../local-validation/runs/browser-harness/` (ou `PI_BROWSER_HARNESS_EVIDENCE`). Windows/Edge local validado; CI testa Windows/Linux, macOS depende de validação na máquina alvo.
 
 ## Origem
 

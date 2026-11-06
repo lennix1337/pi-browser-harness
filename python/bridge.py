@@ -127,6 +127,7 @@ def verify_endpoint(endpoint):
     expected = urlparse(endpoint)
     if ws.scheme != "ws" or ws.hostname != expected.hostname or ws.port != expected.port:
         raise ValueError("CDP WebSocket does not match the configured loopback endpoint")
+    return version["webSocketDebuggerUrl"]
 
 
 def prepare(endpoint):
@@ -137,10 +138,65 @@ def prepare(endpoint):
         ensure_daemon(wait=10)
 
 
+interceptors = {}
+
+
+def stop_interceptors(endpoint=None, target=None):
+    failures = 0
+    for key in list(interceptors):
+        if (endpoint is None or key[0] == endpoint) and (target is None or key[1] == target):
+            editor = interceptors.pop(key)
+            try:
+                editor.close()
+            except Exception:
+                # close() disconnects even when Fetch.disable fails; still release the other targets.
+                failures += 1
+    if failures:
+        raise RuntimeError('Interception cleanup disconnected all matching sessions, but disable was not confirmed')
+
+
 def main(request):
-    """One request, one process: the original one-shot contract."""
+    """One-shot observation/actions cannot keep an interceptor alive after process exit."""
+    if request.get('action') == 'intercept_start':
+        raise ValueError('Interception requires the persistent bridge worker')
     prepare(configure(request["endpoint"]))
+    return dispatch(request)
+
+
+def dispatch(request):
+    if request['action'] in {'intercept_start', 'intercept_status', 'intercept_stop'}:
+        return intercept_action(request)
     return act(request)
+
+
+def intercept_action(request):
+    from interception import Interceptor, validate_rules
+    key = (request['endpoint'], request['target'])
+    action = request['action']
+    if action == 'intercept_start':
+        validate_rules(request.get('rules'))
+        if key in interceptors:
+            raise ValueError('Interceptor already registered; inspect status and stop before replacing rules')
+        editor = Interceptor(verify_endpoint(request['endpoint']), request['target'], request['rules'])
+        interceptors[key] = editor
+        return editor.status()
+    editor = interceptors.get(key)
+    if editor is None:
+        return {'active': False, 'events': [], 'matches': []}
+    snapshot = editor.status()
+    if action == 'intercept_stop':
+        stop_interceptors(request['endpoint'], request['target'])
+        snapshot['active'] = False
+    return snapshot
+
+
+def filter_network(requests, criteria):
+    criteria = criteria or {}
+    return [item for item in requests
+            if (not criteria.get('method') or item.get('method', '').upper() == criteria['method'].upper())
+            and (not criteria.get('urlContains') or criteria['urlContains'] in item.get('url', ''))
+            and (not criteria.get('resourceType') or item.get('resourceType') == criteria['resourceType'])
+            and (criteria.get('status') is None or item.get('status') == criteria['status'])]
 
 
 def act(request):
@@ -150,6 +206,7 @@ def act(request):
     PAGE_ACTION_IPC_RESPONSE_TIMEOUT_SECONDS = 40.0
     action = request["action"]
     if action == "shutdown":
+        stop_interceptors(request['endpoint'])
         return _send({"meta": "shutdown"})
     if action == "open":
         target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
@@ -167,12 +224,14 @@ def act(request):
         except Exception:
             return ""
     if action == "close":
+        stop_interceptors(request['endpoint'], target)
         closed = cdp("Target.closeTarget", targetId=target)
         network_file(local_endpoint(request["endpoint"]), session).unlink(missing_ok=True)
         return closed
     if action == "network":
         requests = collect_network(local_endpoint(request["endpoint"]), session, _send({"meta": "drain_events"}).get("events", []))
-        return {"url": page_url(), "requests": requests, "totalRequests": len(requests)}
+        filtered = filter_network(requests, request.get('filter'))
+        return {"url": page_url(), "requests": filtered, "totalRequests": len(filtered)}
     if action == "navigate":
         result = call("Page.navigate", _response_timeout=PAGE_ACTION_IPC_RESPONSE_TIMEOUT_SECONDS, url=request["url"])
         if result.get("errorText"):
@@ -207,6 +266,13 @@ def act(request):
 
 
 def serve(read, write):
+    try:
+        return serve_requests(read, write)
+    finally:
+        stop_interceptors()
+
+
+def serve_requests(read, write):
     """Persistent worker for one endpoint. `read` returns one request line (bytes, b"" at EOF); `write` takes one reply.
 
     Protocol: the host sends a hello with the endpoint, then requests carrying an `id`. Every reply repeats that id.
@@ -237,7 +303,7 @@ def serve(read, write):
             if request.get("endpoint") != endpoint:
                 raise ValueError("request endpoint does not match this worker")
             prepare(endpoint)
-            write({"id": request.get("id"), "ok": True, "result": act(request)})
+            write({"id": request.get("id"), "ok": True, "result": dispatch(request)})
         except Exception as error:
             write({"id": request.get("id") if isinstance(request, dict) else None, "ok": False, "error": str(error)[:500]})
 

@@ -3,6 +3,41 @@ import { test } from 'node:test';
 import { Controller, type Args } from '../src/controller.ts';
 import { endpoint, type Request } from '../src/client.ts';
 
+test('network filters apply only to owned tabs and validate filter fields before dispatch', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute({ action: 'open' });
+  const result = await controller.execute({ action: 'network', tab: 'owned', filter: { method: 'POST', urlContains: '/save', resourceType: 'Fetch', status: 200 } });
+  assert.equal(result.isError, false);
+  assert.deepEqual(calls.at(-1)?.filter, { method: 'POST', urlContains: '/save', resourceType: 'Fetch', status: 200 });
+  const before = calls.length;
+  assert.equal((await controller.execute({ action: 'network', tab: 'unowned', filter: { method: 'POST' } })).isError, true);
+  assert.equal((await controller.execute({ action: 'network', tab: 'owned', filter: { method: 'POST', unexpected: 'x' } as any })).isError, true);
+  assert.equal(calls.length, before);
+});
+
+test('interception validates bounded rules and ownership before any transport', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute({ action: 'open' });
+  const rules = [{ match: { urlPattern: 'http://localhost:1234/api/*', method: 'POST', resourceType: 'Fetch' }, edit: { postData: '{"name":"edited"}', headers: { 'X-Test': 'yes' } } }];
+  const start = await controller.execute({ action: 'intercept_start', tab: 'owned', rules } as any);
+  assert.equal(start.isError, false);
+  assert.deepEqual(calls.at(-1)?.rules, rules);
+  for (const action of ['intercept_start', 'intercept_status', 'intercept_stop']) {
+    assert.equal((await controller.execute({ action, tab: 'personal', ...(action === 'intercept_start' ? { rules } : {}) } as any)).value.status, 'invalid_input');
+  }
+  const before = calls.length;
+  for (const invalid of [[], Array(17).fill(rules[0]), [{ ...rules[0], maxMatches: 0 }], [{ ...rules[0], maxMatches: 101 }],
+    [{ match: {}, edit: { method: 'POST' } }], [{ ...rules[0], edit: {} }], [{ ...rules[0], edit: { method: 'POST\r\nX: x' } }],
+    [{ ...rules[0], edit: { url: 'https://u:p@example.com' } }], [{ ...rules[0], edit: { headers: { Host: 'other' } } }],
+    [{ ...rules[0], edit: { headers: { 'X-Test': 'x\r\ny' } } }], [{ ...rules[0], edit: { postData: 'x'.repeat(65537) } }],
+    [{ ...rules[0], unexpected: true }], [{ ...rules[0], match: { ...rules[0].match, status: 200 } }]]) {
+    assert.equal((await controller.execute({ action: 'intercept_start', tab: 'owned', rules: invalid } as any)).value.status, 'invalid_input');
+  }
+  assert.equal(calls.length, before);
+  assert.equal((await controller.execute({ action: 'intercept_status', tab: 'owned' })).isError, false);
+  assert.equal((await controller.execute({ action: 'intercept_stop', tab: 'owned' })).isError, false);
+});
+
 function fixture() {
   const calls: Request[] = [];
   const controller = new Controller(async request => {

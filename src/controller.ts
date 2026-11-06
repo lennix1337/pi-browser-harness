@@ -1,15 +1,18 @@
 import { randomUUID } from 'node:crypto';
+import { validateRules, type InterceptRule } from './interception.ts';
 import { bridge, cdpAlive, endpoint, installation, type Request } from './client.ts';
 
+export type NetworkFilter = { method?: string; urlContains?: string; resourceType?: string; status?: number };
 export type Args = { action?: string; endpoint?: string; tab?: string; url?: string; expression?: string;
-  node?: number; text?: string; receipt?: string; offset?: number; limit?: number };
+  node?: number; text?: string; receipt?: string; offset?: number; limit?: number; filter?: NetworkFilter; rules?: InterceptRule[] };
 export type Transport = (request: Request, signal?: AbortSignal) => Promise<any>;
 export type Probe = (origin: string) => Promise<boolean>;
 const fields: Record<string, string[]> = {
   status: ['action'], open: ['action', 'endpoint', 'url'], navigate: ['action', 'tab', 'url'],
-  inspect: ['action', 'tab'], network: ['action', 'tab'], evaluate: ['action', 'tab', 'expression'], screenshot: ['action', 'tab'],
+  inspect: ['action', 'tab'], network: ['action', 'tab', 'filter'], evaluate: ['action', 'tab', 'expression'], screenshot: ['action', 'tab'],
   click: ['action', 'tab', 'node'], type: ['action', 'tab', 'node', 'text'], close: ['action', 'tab'],
   read: ['action', 'receipt', 'offset', 'limit'],
+  intercept_start: ['action', 'tab', 'rules'], intercept_status: ['action', 'tab'], intercept_stop: ['action', 'tab'],
 };
 function pageUrl(value: unknown): string {
   if (value === 'about:blank') return value;
@@ -17,6 +20,19 @@ function pageUrl(value: unknown): string {
   const u = new URL(value);
   if (!['https:', 'http:'].includes(u.protocol) || u.username || u.password) throw new Error('Use an HTTP(S) URL without embedded credentials.');
   return value;
+}
+export function validateNetworkFilter(f: NetworkFilter) {
+  if (!f || typeof f !== 'object' || Array.isArray(f) || Object.keys(f).some(k => !['method', 'urlContains', 'resourceType', 'status'].includes(k))
+    || [f.method, f.urlContains, f.resourceType].some(v => v !== undefined && (typeof v !== 'string' || v.length < 1 || v.length > 2048))
+    || (f.status !== undefined && (!Number.isInteger(f.status) || f.status < 100 || f.status > 599))) throw new Error('Invalid network filter.');
+}
+function validatePageArgs(action: string, args: Args) {
+  if (action === 'network' && args.filter !== undefined) validateNetworkFilter(args.filter);
+  if (action === 'intercept_start') validateRules(args.rules);
+  if (action === 'navigate') pageUrl(args.url);
+  if (action === 'evaluate' && (typeof args.expression !== 'string' || !args.expression.length || args.expression.length > 32768)) throw new Error('Supply expression (1..32768 characters).');
+  if (['click', 'type'].includes(action) && (!Number.isInteger(args.node) || args.node! < 1)) throw new Error('Supply a positive backend node ID from a fresh inspect.');
+  if (action === 'type' && (typeof args.text !== 'string' || args.text.length > 32768)) throw new Error('Supply text (<=32768 characters). Input inserts at the focused node; it does not clear it.');
 }
 /** CDP's answer to `Target.closeTarget` for an id the browser does not have. */
 const TAB_GONE = /No target with given id/i;
@@ -69,11 +85,8 @@ export class Controller {
       } else {
         const tab = this.tabs.get(args.tab ?? '');
         if (!tab) throw new Error('Tab is not owned by this Pi session. Use open, or status for owned IDs. Never adopt personal tabs.');
-        if (action === 'navigate') pageUrl(args.url);
-        if (action === 'evaluate' && (typeof args.expression !== 'string' || !args.expression.length || args.expression.length > 32768)) throw new Error('Supply expression (1..32768 characters).');
-        if (['click', 'type'].includes(action) && (!Number.isInteger(args.node) || args.node! < 1)) throw new Error('Supply a positive backend node ID from a fresh inspect.');
-        if (action === 'type' && (typeof args.text !== 'string' || args.text.length > 32768)) throw new Error('Supply text (<=32768 characters). Input inserts at the focused node; it does not clear it.');
-        request = { action, ...tab, url: args.url, expression: args.expression, node: args.node, text: args.text };
+        validatePageArgs(action, args);
+        request = { action, ...tab, url: args.url, expression: args.expression, node: args.node, text: args.text, filter: args.filter, rules: args.rules };
       }
       this.busy = true; acquired = true; dispatched = true;
       let result = await this.send(request, signal);

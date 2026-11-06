@@ -114,10 +114,14 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "browser-harness" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "browser-harness", specifier = "==0.1.13" }]
+requires-dist = [
+    { name = "browser-harness", specifier = "==0.1.13" },
+    { name = "websockets", specifier = "==15.0.1" },
+]
 
 [[package]]
 name = "pillow"
