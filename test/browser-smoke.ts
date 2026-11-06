@@ -141,6 +141,9 @@ try {
   assert.equal((await crashCall({ action: 'evaluate', expression: fetchCapture() })).value.body, 'original', 'worker death releases interception without replay or hung requests');
   assert.equal((await crashCall({ action: 'intercept_status' })).active, false);
   assert.equal(received.length, 10, 'every fixture fetch reaches the server exactly once, never replayed');
+  observations.beforeScreenshot = (await call('task-owner', { action: 'evaluate', tab: mainTab,
+    expression: '({url:location.href,visibility:document.visibilityState,focused:document.hasFocus(),ready:document.readyState,width:innerWidth,height:innerHeight,result:document.querySelector("#result").innerText,userAgent:navigator.userAgent})' })).details.result.value;
+  writeFileSync(join(output, 'before-screenshot.json'), JSON.stringify(observations, null, 2));
   const image = await call('task-owner', { action: 'screenshot', tab: mainTab });
   const png = image.content.find((block: any) => block.type === 'image');
   assert.ok(png && png.type === 'image');
