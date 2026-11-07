@@ -72,7 +72,10 @@ export class Controller {
     const action = args.action ?? 'status';
     let dispatched = false, acquired = false;
     try {
-      if (!fields[action] || Object.keys(args).some(key => !fields[action].includes(key))) throw new Error('Unknown action/fields. Start with status; page actions require an owned tab ID.');
+      const accepted = fields[action];
+      if (!accepted) throw new Error(`Unknown action "${action}"; actions: ${Object.keys(fields).join(', ')}. Start with status; page actions require an owned tab ID.`);
+      const stray = Object.keys(args).find(key => !accepted.includes(key));
+      if (stray !== undefined) throw new Error(`Unknown field "${stray}" for ${action}; accepts: ${accepted.join(', ')}.`);
       if (action === 'status') return { value: { status: 'ok', ...installation(), tabs: [...this.tabs.keys()], browsers: await this.browsers() }, isError: false };
       if (action === 'read') return { value: { status: 'ok', ...this.read(args) }, isError: false };
       if (this.busy) throw new Error('Browser action already in progress for this session. Serialize interactions.');

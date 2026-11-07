@@ -220,3 +220,14 @@ test('status without owned tabs probes nothing', async () => {
   assert.equal((await controller.execute({})).value.browsers, undefined);
   assert.deepEqual(probed, []);
 });
+
+test('an unknown action or field names itself and lists what the action accepts', async () => {
+  const { controller, calls } = fixture();
+  await controller.execute({ action: 'open' });
+  const field = await controller.execute({ action: 'inspect', tab: 'owned', selector: 'body' } as any);
+  assert.equal(field.value.status, 'invalid_input');
+  assert.match(field.value.message, /unknown field "selector" for inspect; accepts: action, tab/i);
+  const action = await controller.execute({ action: 'inspekt', tab: 'owned' } as any);
+  assert.match(action.value.message, /unknown action "inspekt"; actions: status, open/i);
+  assert.equal(calls.length, 1);
+});
