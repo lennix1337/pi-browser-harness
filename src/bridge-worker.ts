@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { bridgeDeadline, python, root, type Request } from './client.ts';
@@ -15,10 +16,19 @@ import { bridgeDeadline, python, root, type Request } from './client.ts';
  *   action as uncertain; the next action starts a fresh worker;
  * - closing a session sends EOF: the worker exits by itself; a worker that ignores EOF is killed after a grace period.
  */
-export type Command = { python: string; args: string[] };
+/** `passEnv` names extra variables to hand the worker; tests use it for their protocol double's switches. */
+export type Command = { python: string; args: string[]; passEnv?: string[] };
 export type Options = { command?: Command; healthMs?: number; helloMs?: number; closeGraceMs?: number; deadlineMs?: number };
 
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
+/** What the worker needs to find its runtime and the browser's data directory. Everything else in the Pi process (tokens, keys) stays out. */
+const ENV_ALLOWED = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+  'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'LANG', 'LC_ALL', 'TZ', 'PI_BROWSER_HARNESS_HOME']);
+export function workerEnv(source: NodeJS.ProcessEnv = process.env, extra: string[] = []): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { PYTHONIOENCODING: 'utf-8' };
+  for (const [key, value] of Object.entries(source)) if ((ENV_ALLOWED.has(key.toUpperCase()) || extra.includes(key)) && value !== undefined) env[key] = value;
+  return env;
+}
 const DEFAULT_COMMAND: Command = { python, args: [join(root, 'python/bridge.py'), '--serve'] };
 const EXTERNAL = 'external outcome uncertain. Inspect before retrying.';
 const UNCERTAIN = 'outcome uncertain. Inspect before retrying.';
@@ -59,10 +69,10 @@ class Worker {
 
   get alive() { return this.state === 'running'; }
 
-  static async start(command: Command, endpoint: string, helloMs: number): Promise<Worker> {
+  static async start(command: Command, endpoint: string, helloMs: number, daemon: string): Promise<Worker> {
     if (!existsSync(command.python)) throw new Error(`Runtime missing. Run npm run setup in ${root}`);
     const child = spawn(command.python, command.args, {
-      cwd: root, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+      cwd: root, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...workerEnv(process.env, command.passEnv), PI_BROWSER_HARNESS_DAEMON: daemon },
     });
     const worker = new Worker(endpoint, child);
     try {
@@ -161,6 +171,8 @@ export class BridgeSession {
   private readonly deadlineMs?: number;
   private workers = new Map<string, Worker>();
   private queue: Promise<unknown> = Promise.resolve();
+  /** Upstream daemons keep one event buffer each, and reading it empties it. Sessions sharing a daemon would steal each other's network and dialog events, so each session names its own. */
+  readonly daemon = 'pi-' + randomBytes(4).toString('hex');
 
   constructor(options: Options = {}) {
     this.command = options.command ?? DEFAULT_COMMAND;
@@ -193,7 +205,7 @@ export class BridgeSession {
     if (signal?.aborted) throw new Error('Aborted before dispatch');
     const worker = await this.workerFor(String(request.endpoint));
     if (signal?.aborted) throw new Error('Aborted before dispatch');
-    return worker.request(request, this.deadlineMs ?? bridgeDeadline(request.action), signal);
+    return worker.request(request, this.deadlineMs ?? bridgeDeadline(request), signal);
   }
 
   private async workerFor(endpoint: string): Promise<Worker> {
@@ -201,7 +213,7 @@ export class BridgeSession {
     if (current?.alive && await this.healthy(current)) return current;
     // Nothing of the next action has been sent yet, so replacing a dead or unresponsive worker replays nothing.
     current?.kill('Bridge worker unresponsive before dispatch; restarted.');
-    const fresh = await Worker.start(this.command, endpoint, this.helloMs);
+    const fresh = await Worker.start(this.command, endpoint, this.helloMs, this.daemon);
     this.workers.set(endpoint, fresh);
     return fresh;
   }

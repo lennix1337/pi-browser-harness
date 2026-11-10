@@ -1,17 +1,21 @@
-"""Browser-harness bridge: one request per process (default) or a persistent worker (`--serve`).
+"""Browser-harness bridge: one persistent worker per Pi session (`--serve`) holding a REPL namespace per owned tab.
 
-Both paths run the same checks on every action: loopback endpoint, no redirects, advertised WebSocket origin, and
-self-healing of the upstream daemon under the startup lock. `--serve` only avoids paying the interpreter start and the
-upstream imports again. No CLI exec or active-tab helpers.
+Every request runs the same checks first: loopback endpoint, no redirects, advertised WebSocket origin, and
+self-healing of the upstream daemon under the startup lock. The cell runtime itself is in repl.py. No CLI exec or
+active-tab helpers.
 """
 import contextlib
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import sys
+from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -56,51 +60,12 @@ def runtime_for(endpoint):
     return home / hashlib.sha256(endpoint.encode()).hexdigest()[:16]
 
 
-def network_file(endpoint, session):
-    digest = hashlib.sha256(session.encode()).hexdigest()[:16]
-    return runtime_for(endpoint) / f"network-{digest}.json"
-
-
-def apply_network_event(entries, event):
-    method, params = event.get("method", ""), event.get("params") or {}
-    rid = str(params.get("requestId", ""))
-    if not rid:
-        return
-    entry = entries.setdefault(rid, {"requestId": rid, "method": "", "url": "", "resourceType": ""})
-    if params.get("type"):
-        entry["resourceType"] = params["type"]
-    if method == "Network.requestWillBeSent":
-        req = params.get("request") or {}
-        entry.update(method=req.get("method", entry["method"]), url=req.get("url", entry["url"]))
-        if isinstance(req.get("postData"), str):
-            entry["postData"] = req["postData"][:4096]
-    elif method == "Network.responseReceived":
-        resp = params.get("response") or {}
-        entry.update(url=entry["url"] or resp.get("url", ""), status=resp.get("status"), mimeType=resp.get("mimeType", ""))
-    elif method == "Network.loadingFailed":
-        entry["errorText"] = params.get("errorText", "loadingFailed")
-
-
-def load_network_entries(path):
-    if not path.exists():
-        return {}
-    return {item["requestId"]: item for item in json.loads(path.read_text(encoding="utf-8")) if "requestId" in item}
-
-
-def collect_network(endpoint, session, events):
-    grouped = {}
-    for event in events:
-        sid = event.get("session_id")
-        if sid and str(event.get("method", "")).startswith("Network."):
-            grouped.setdefault(sid, []).append(event)
-    with startup_lock(runtime_for(endpoint) / "startup.lock"):
-        for sid, batch in grouped.items():
-            path = network_file(endpoint, sid)
-            entries = load_network_entries(path)
-            for event in batch:
-                apply_network_event(entries, event)
-            path.write_text(json.dumps(list(entries.values())[-256:], ensure_ascii=True), encoding="utf-8")
-        return list(load_network_entries(network_file(endpoint, session)).values())
+def daemon_name():
+    """The upstream daemon this worker talks to: one per Pi session, because each daemon has a single event buffer."""
+    name = os.environ.get("PI_BROWSER_HARNESS_DAEMON", "pi")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+        raise ValueError("PI_BROWSER_HARNESS_DAEMON must be 1-64 letters, digits, - or _")
+    return name
 
 
 def configure(value):
@@ -109,7 +74,7 @@ def configure(value):
     runtime = runtime_for(endpoint)
     runtime.mkdir(parents=True, exist_ok=True)
     os.environ.update(BH_HOME=str(runtime), BH_RECORD="0", BH_TELEMETRY="0", BH_TAB_MARKER="0",
-                      BH_DOMAIN_SKILLS="0", BU_CDP_URL=endpoint, BU_NAME="pi", NO_PROXY="localhost,127.0.0.1,::1")
+                      BH_DOMAIN_SKILLS="0", BU_CDP_URL=endpoint, BU_NAME=daemon_name(), NO_PROXY="localhost,127.0.0.1,::1")
     for key in ("BU_CDP_WS", "BU_BROWSER_ID", "BROWSER_USE_API_KEY", "BH_AGENT_WORKSPACE",
                 "BH_RUNTIME_DIR", "BH_TMP_DIR", "BROWSER_HARNESS_HOME"):
         os.environ.pop(key, None)
@@ -130,153 +95,147 @@ def verify_endpoint(endpoint):
     return version["webSocketDebuggerUrl"]
 
 
+def transient(error):
+    """A timeout before anything was dispatched: the one case a second attempt cannot repeat an effect."""
+    return isinstance(error, TimeoutError) or (isinstance(error, URLError) and isinstance(error.reason, TimeoutError))
+
+
 def prepare(endpoint):
-    """Run before every action: verify the endpoint, then self-heal the upstream daemon under the startup lock."""
-    verify_endpoint(endpoint)
+    """Run before every request: verify the endpoint, then self-heal the upstream daemon under the startup lock.
+
+    Each step is tried twice at most, and only because nothing has reached the page yet.
+    """
+    try:
+        verify_endpoint(endpoint)
+    except Exception as error:
+        if not transient(error):
+            raise
+        verify_endpoint(endpoint)
     from browser_harness.admin import ensure_daemon
     with startup_lock(runtime_for(endpoint) / "startup.lock"):
-        ensure_daemon(wait=10)
-
-
-interceptors = {}
-
-
-def stop_interceptors(endpoint=None, target=None):
-    failures = 0
-    for key in list(interceptors):
-        if (endpoint is None or key[0] == endpoint) and (target is None or key[1] == target):
-            editor = interceptors.pop(key)
-            try:
-                editor.close()
-            except Exception:
-                # close() disconnects even when Fetch.disable fails; still release the other targets.
-                failures += 1
-    if failures:
-        raise RuntimeError('Interception cleanup disconnected all matching sessions, but disable was not confirmed')
-
-
-def main(request):
-    """One-shot observation/actions cannot keep an interceptor alive after process exit."""
-    if request.get('action') == 'intercept_start':
-        raise ValueError('Interception requires the persistent bridge worker')
-    prepare(configure(request["endpoint"]))
-    return dispatch(request)
-
-
-def dispatch(request):
-    if request['action'] in {'intercept_start', 'intercept_status', 'intercept_stop'}:
-        return intercept_action(request)
-    return act(request)
-
-
-def intercept_action(request):
-    from interception import Interceptor, validate_rules
-    key = (request['endpoint'], request['target'])
-    action = request['action']
-    if action == 'intercept_start':
-        validate_rules(request.get('rules'))
-        if key in interceptors:
-            raise ValueError('Interceptor already registered; inspect status and stop before replacing rules')
-        editor = Interceptor(verify_endpoint(request['endpoint']), request['target'], request['rules'])
-        interceptors[key] = editor
-        return editor.status()
-    editor = interceptors.get(key)
-    if editor is None:
-        return {'active': False, 'events': [], 'matches': []}
-    snapshot = editor.status()
-    if action == 'intercept_stop':
-        stop_interceptors(request['endpoint'], request['target'])
-        snapshot['active'] = False
-    return snapshot
-
-
-def filter_network(requests, criteria):
-    criteria = criteria or {}
-    return [item for item in requests
-            if (not criteria.get('method') or item.get('method', '').upper() == criteria['method'].upper())
-            and (not criteria.get('urlContains') or criteria['urlContains'] in item.get('url', ''))
-            and (not criteria.get('resourceType') or item.get('resourceType') == criteria['resourceType'])
-            and (criteria.get('status') is None or item.get('status') == criteria['status'])]
-
-
-def act(request):
-    from browser_harness.helpers import cdp, _send, SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS
-    # Upstream's 5s IPC default is too short for awaited page scripts and navigation, and a timeout leaves the
-    # effect uncertain. Stay below the host's 45s deadline so the worker, not the host, reports the slow call.
-    PAGE_ACTION_IPC_RESPONSE_TIMEOUT_SECONDS = 40.0
-    action = request["action"]
-    if action == "shutdown":
-        stop_interceptors(request['endpoint'])
-        return _send({"meta": "shutdown"})
-    if action == "open":
-        target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
-        session = cdp("Target.attachToTarget", targetId=target, flatten=True)["sessionId"]
-        cdp("Network.enable", session_id=session)
-        # Return identity BEFORE navigating. The host records ownership before any further effects.
-        return {"target": target, "session": session}
-    target, session = request["target"], request["session"]
-    def call(method, **params):
-        return cdp(method, session_id=session, **params)
-    def page_url():
-        # The page this tab shows, so the host can tell a consent or billing page before the next input.
         try:
-            return cdp("Target.getTargetInfo", targetId=target)["targetInfo"].get("url", "")
+            ensure_daemon(wait=10)
         except Exception:
-            return ""
-    if action == "close":
-        stop_interceptors(request['endpoint'], target)
-        closed = cdp("Target.closeTarget", targetId=target)
-        network_file(local_endpoint(request["endpoint"]), session).unlink(missing_ok=True)
-        return closed
-    if action == "network":
-        requests = collect_network(local_endpoint(request["endpoint"]), session, _send({"meta": "drain_events"}).get("events", []))
-        filtered = filter_network(requests, request.get('filter'))
-        return {"url": page_url(), "requests": filtered, "totalRequests": len(filtered)}
-    if action == "navigate":
-        result = call("Page.navigate", _response_timeout=PAGE_ACTION_IPC_RESPONSE_TIMEOUT_SECONDS, url=request["url"])
-        if result.get("errorText"):
-            raise RuntimeError(result["errorText"])
-        return result
-    if action == "inspect":
-        nodes = call("Accessibility.getFullAXTree")["nodes"]
-        return {"url": page_url(), "nodes": [{"node": n.get("backendDOMNodeId"), "role": n.get("role", {}).get("value"),
-                           "name": n.get("name", {}).get("value", "")}
-                          for n in nodes if not n.get("ignored")], "totalNodes": len(nodes)}
-    if action == "screenshot":
-        return call("Page.captureScreenshot", _response_timeout=SCREENSHOT_IPC_RESPONSE_TIMEOUT_SECONDS, format="png", captureBeyondViewport=False)
-    if action == "evaluate":
-        result = call("Runtime.evaluate", _response_timeout=PAGE_ACTION_IPC_RESPONSE_TIMEOUT_SECONDS, expression=request["expression"], returnByValue=True, awaitPromise=True)
-        if "exceptionDetails" in result:
-            raise RuntimeError("JavaScript failed: " + result["exceptionDetails"].get("text", "exception"))
-        remote = result.get("result", {})
-        return {"value": remote.get("value"), "type": remote.get("type"),
-                "unserializableValue": remote.get("unserializableValue")}
-    if action == "click":
-        call("DOM.scrollIntoViewIfNeeded", backendNodeId=request["node"])
-        quad = call("DOM.getBoxModel", backendNodeId=request["node"])["model"]["content"]
-        x, y = sum(quad[0::2]) / 4, sum(quad[1::2]) / 4
-        call("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", clickCount=1)
-        call("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", clickCount=1)
-        return {"dispatched": True, "url": page_url()}
-    if action == "type":
-        call("DOM.focus", backendNodeId=request["node"])
-        call("Input.insertText", text=request["text"])
-        return {"dispatched": True, "url": page_url()}
-    raise ValueError("Unknown action")
+            ensure_daemon(wait=10)
 
 
-def serve(read, write):
-    try:
-        return serve_requests(read, write)
-    finally:
-        stop_interceptors()
+REMOVED = {"navigate", "inspect", "click", "type", "evaluate", "network", "intercept_start", "intercept_status", "intercept_stop"}
+DOMAINS = ("Page", "Network", "DOM", "Runtime")
 
 
-def serve_requests(read, write):
+class Worker:
+    """The tabs of one endpoint and the cell runtime behind them."""
+
+    def __init__(self, endpoint, start_router=False):
+        self.endpoint = endpoint
+        self.start_router = start_router
+        self.router = None
+
+    def _router(self):
+        if self.router is None:
+            from repl import Router
+            self.router = Router()
+            if self.start_router:
+                self.router.start()
+        return self.router
+
+    def tab(self, request, fresh=False):
+        from repl import Tab
+        router = self._router()
+        target, session = request["target"], request["session"]
+        tab = router.tabs.get(session)
+        if tab is None:
+            if not fresh:
+                self.require_live(target, session)
+            tab = Tab(router, self.endpoint, target, session, ws_url=lambda: verify_endpoint(self.endpoint))
+        elif tab.target != target:
+            raise ValueError("session belongs to another tab")
+        return tab
+
+    def require_live(self, target, session):
+        """A session lives and dies with the daemon connection that attached it; one that ended with its bridge never comes back."""
+        from browser_harness.helpers import cdp
+        try:
+            cdp("Runtime.evaluate", session_id=session, expression="1", _response_timeout=5)
+        except Exception as error:
+            if "Session with given id not found" in str(error):
+                raise RuntimeError("the tab's CDP session ended with its bridge worker; close this tab and open a new one") from None
+            raise
+
+    def open(self):
+        from browser_harness.helpers import cdp
+        target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+        try:
+            session = cdp("Target.attachToTarget", targetId=target, flatten=True)["sessionId"]
+            for domain in DOMAINS:
+                cdp(domain + ".enable", session_id=session)
+            # A hidden tab runs chained timers about once a second; telling the page it has focus keeps it a background
+            # tab (never brought to the front) whose timers, waits and visibility behave like a foreground one.
+            cdp("Emulation.setFocusEmulationEnabled", session_id=session, enabled=True)
+        except Exception:
+            try:
+                cdp("Target.closeTarget", targetId=target)
+            finally:
+                raise
+        self.tab({"target": target, "session": session}, fresh=True)
+        return {"target": target, "session": session}
+
+    def dispatch(self, request):
+        action = request.get("action")
+        if action == "open":
+            return self.open()
+        if action == "shutdown":
+            from browser_harness.helpers import _send
+            self.close_all()
+            return _send({"meta": "shutdown"})
+        if action not in {"exec", "state", "screenshot", "close"}:
+            raise ValueError("Unknown action")
+        if action == "close":
+            return self.close_tab(request)
+        tab = self.tab(request)
+        if action == "exec":
+            if not isinstance(request.get("code"), str):
+                raise ValueError("exec needs code")
+            return tab.run(request["code"])
+        if action == "state":
+            return tab.state(max=request.get("max", 3000))
+        if action == "screenshot":
+            return tab.screenshot(full=bool(request.get("full")), max_width=request.get("maxWidth", 1280))
+
+    def close_tab(self, request):
+        """Closing needs the target, not a live session, so a tab whose session ended can still be closed."""
+        from browser_harness.helpers import cdp
+        tab = self.router.tabs.get(request["session"]) if self.router is not None else None
+        if tab is not None:
+            if tab.target != request["target"]:
+                raise ValueError("session belongs to another tab")
+            tab.close()
+        return cdp("Target.closeTarget", targetId=request["target"])
+
+    def close_all(self):
+        if self.router is not None:
+            for tab in list(self.router.tabs.values()):
+                try:
+                    tab.close()
+                except Exception:
+                    pass
+
+    def release_daemon(self):
+        """The session's own daemon ends with its worker; a daemon nobody reads only holds a browser connection open."""
+        if self.router is None:
+            return
+        try:
+            self.router.helpers._send({"meta": "shutdown"})
+        except Exception:
+            pass
+
+
+def serve(read, write, start_router=False):
     """Persistent worker for one endpoint. `read` returns one request line (bytes, b"" at EOF); `write` takes one reply.
 
     Protocol: the host sends a hello with the endpoint, then requests carrying an `id`. Every reply repeats that id.
-    A failed action is one error reply and the worker keeps serving. EOF from the host is a clean exit.
+    A failed request is one error reply and the worker keeps serving. EOF from the host is a clean exit. A cell that
+    raises is an ok reply whose result carries its own status: the worker did its job and the cell did not.
     """
     line = read()
     if not line:
@@ -289,38 +248,41 @@ def serve_requests(read, write):
     except Exception as error:
         write({"id": hello.get("id"), "control": "error", "error": str(error)[:500]})
         return 1
+    worker = Worker(endpoint, start_router)
     write({"id": hello.get("id"), "control": "ready"})
-    while True:
-        line = read()
-        if not line:
-            return 0
-        request = None
-        try:
-            request = json.loads(line)
-            if request.get("control") == "ping":
-                write({"id": request.get("id"), "ok": True, "control": "pong"})
-                continue
-            if request.get("endpoint") != endpoint:
-                raise ValueError("request endpoint does not match this worker")
-            prepare(endpoint)
-            write({"id": request.get("id"), "ok": True, "result": dispatch(request)})
-        except Exception as error:
-            write({"id": request.get("id") if isinstance(request, dict) else None, "ok": False, "error": str(error)[:500]})
+    try:
+        while True:
+            line = read()
+            if not line:
+                return 0
+            request = None
+            try:
+                request = json.loads(line)
+                if request.get("control") == "ping":
+                    write({"id": request.get("id"), "ok": True, "control": "pong"})
+                    continue
+                if request.get("endpoint") != endpoint:
+                    raise ValueError("request endpoint does not match this worker")
+                if request.get("action") in REMOVED:
+                    raise ValueError(f"removed action {request['action']}; use exec (click(id), type(id, text), js(expr), goto(url), network(...)) or state")
+                if request.get("action") != "shutdown":
+                    prepare(endpoint)
+                write({"id": request.get("id"), "ok": True, "result": worker.dispatch(request)})
+            except Exception as error:
+                write({"id": request.get("id") if isinstance(request, dict) else None, "ok": False, "error": str(error)[:500]})
+    finally:
+        worker.close_all()
+        worker.release_daemon()
 
 
 if __name__ == "__main__":
-    if "--serve" in sys.argv[1:]:
-        protocol = sys.stdout.buffer
-        # The protocol owns the real stdout; anything upstream prints goes to stderr, which the host discards.
-        sys.stdout = sys.stderr
+    if "--serve" not in sys.argv[1:]:
+        sys.exit("bridge.py runs only as the persistent worker: python bridge.py --serve")
+    protocol = sys.stdout.buffer
+    # The protocol owns the real stdout; anything upstream prints goes to stderr, which the host discards.
+    sys.stdout = sys.stderr
 
-        def write(message):
-            protocol.write((json.dumps(message, ensure_ascii=True) + "\n").encode("ascii"))
-            protocol.flush()
-        sys.exit(serve(sys.stdin.buffer.readline, write))
-    sys.stdout.reconfigure(encoding="utf-8")
-    try:
-        print(json.dumps({"ok": True, "result": main(json.load(sys.stdin))}, ensure_ascii=True))
-    except Exception as error:
-        print(json.dumps({"ok": False, "error": str(error)[:500]}))
-        sys.exit(1)
+    def write(message):
+        protocol.write((json.dumps(message, ensure_ascii=True) + "\n").encode("ascii"))
+        protocol.flush()
+    sys.exit(serve(sys.stdin.buffer.readline, write, start_router=True))

@@ -17,5 +17,6 @@ export async function load() {
   assert.ok(loader.getSkills().skills.some(s => s.name === 'pi-browser-harness'));
   const extension = loaded.extensions.find(e => e.tools.has('browser_harness'));
   assert.ok(extension);
-  return { tool: extension.tools.get('browser_harness')!.definition, cleanup: () => rmSync(home, { recursive: true, force: true }) };
+  const shutdown = extension.handlers.get('session_shutdown')?.[0] as undefined | (() => Promise<void>);
+  return { tool: extension.tools.get('browser_harness')!.definition, shutdown, cleanup: () => rmSync(home, { recursive: true, force: true }) };
 }

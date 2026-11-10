@@ -6,15 +6,17 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { BridgeSession } from '../src/bridge-worker.ts';
+import { bridgeDeadline } from '../src/client.ts';
 
 const fake = fileURLToPath(new URL('./fixtures/fake-bridge-worker.mjs', import.meta.url));
 const source = fileURLToPath(new URL('../src/bridge-worker.ts', import.meta.url));
+const FAKE = ['FAKE_LOG', 'FAKE_EXIT_AFTER', 'FAKE_IGNORE_EOF', 'FAKE_HANG_PING_ONCE'];
 const ENDPOINT = 'http://127.0.0.1:9555';
 const OTHER = 'http://127.0.0.1:9556';
 
 function session(options: { deadlineMs?: number; healthMs?: number } = {}) {
   return new BridgeSession({
-    command: { python: process.execPath, args: [fake] },
+    command: { python: process.execPath, args: [fake], passEnv: FAKE },
     healthMs: options.healthMs ?? 1000, helloMs: 5000, closeGraceMs: 300, deadlineMs: options.deadlineMs,
   });
 }
@@ -198,4 +200,37 @@ test('a session without close does not keep the Node process alive', () => {
   const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code], { encoding: 'utf8', timeout: 20000 });
   assert.equal(result.signal, null, 'the process exited on its own instead of being killed by the timeout');
   assert.equal(result.status, 0, result.stderr);
+});
+
+test('the worker runs with an allowlisted environment: no tokens or cloud keys from the Pi process', async () => {
+  await withEnv({ BROWSER_USE_API_KEY: 'k-1', OPENAI_API_KEY: 'k-2', GITHUB_TOKEN: 'k-3', SLACK_BOT_TOKEN: 'k-4', PI_BROWSER_HARNESS_HOME: tmpdir() }, async () => {
+    const s = session();
+    try {
+      const { env } = await s.send({ action: 'env', endpoint: ENDPOINT });
+      for (const secret of ['BROWSER_USE_API_KEY', 'OPENAI_API_KEY', 'GITHUB_TOKEN', 'SLACK_BOT_TOKEN']) assert.equal(env[secret], undefined, secret);
+      assert.ok(Object.keys(env).some(key => key.toUpperCase() === 'PATH'), 'the interpreter still finds its runtime');
+      assert.equal(env.PI_BROWSER_HARNESS_HOME, tmpdir(), 'the runtime directory the host chose reaches the worker');
+      assert.equal(env.PYTHONIOENCODING, 'utf-8');
+    } finally { await s.close(); }
+  });
+});
+
+test('each session names its own upstream daemon: one event buffer must never be read by two sessions', async () => {
+  const [a, b] = [session(), session()];
+  try {
+    const first = (await a.send({ action: 'env', endpoint: ENDPOINT })).env.PI_BROWSER_HARNESS_DAEMON;
+    const again = (await a.send({ action: 'env', endpoint: OTHER })).env.PI_BROWSER_HARNESS_DAEMON;
+    const second = (await b.send({ action: 'env', endpoint: ENDPOINT })).env.PI_BROWSER_HARNESS_DAEMON;
+    assert.match(first, /^pi-[0-9a-f]{8}$/);
+    assert.equal(again, first, 'one session keeps its daemon across endpoints and worker restarts');
+    assert.notEqual(second, first);
+  } finally { await Promise.all([a.close(), b.close()]); }
+});
+
+test('a cell gets its own timeout plus a margin before the worker is killed; screenshots keep the upstream bound', () => {
+  assert.equal(bridgeDeadline({ action: 'exec', timeout: 30 }), 35000);
+  assert.equal(bridgeDeadline({ action: 'exec', timeout: 120 }), 125000);
+  assert.equal(bridgeDeadline({ action: 'exec' }), 35000);
+  assert.equal(bridgeDeadline({ action: 'screenshot' }), 75000);
+  assert.equal(bridgeDeadline({ action: 'state' }), 45000);
 });
