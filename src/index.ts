@@ -3,11 +3,26 @@ import { Type } from 'typebox';
 import { Controller } from './controller.ts';
 import { interceptRulesSchema } from './interception.ts';
 import { BridgeSession, type Options as BridgeOptions } from './bridge-worker.ts';
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { root } from './client.ts';
 import { activity, closeIdle, record, touch } from '../scripts/browser.mjs';
 
 /** The isolated browser closes after this long without a page action; 0 keeps it open. */
 export interface IdleOptions { minutes?: number; everyMs?: number; record?: string; activity?: string }
 export interface ExtensionOptions { bridge?: BridgeOptions; idle?: IdleOptions }
+
+/** Same directory regardless of case (Windows), separators, trailing slash or links. */
+function canonical(path: string): string {
+  let real: string;
+  try { real = realpathSync.native(path); } catch { real = resolve(path); }
+  return process.platform === 'win32' ? real.toLowerCase() : real;
+}
+
+/** PI_BROWSER_HARNESS_ONLY_ROOT lets a benchmark load two copies of this package and keep one registered. */
+function selected(only = process.env.PI_BROWSER_HARNESS_ONLY_ROOT): boolean {
+  return only === undefined || only === '' || canonical(only) === canonical(root);
+}
 
 function idleMinutes(value = process.env.PI_BROWSER_HARNESS_IDLE_MINUTES) {
   const minutes = value === undefined || value === '' ? 30 : Number(value);
@@ -20,6 +35,7 @@ export function browserHarnessExtension(options: ExtensionOptions = {}) {
 }
 
 function extension(pi: ExtensionAPI, options: ExtensionOptions) {
+  if (!selected()) return;
   const sessions = new Map<string, Controller>();
   // One persistent bridge per Pi session: its Python worker serves that session's actions and is ended on shutdown.
   const bridges = new Map<string, BridgeSession>();

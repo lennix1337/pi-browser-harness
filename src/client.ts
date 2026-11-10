@@ -1,5 +1,5 @@
-import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -59,8 +59,16 @@ export async function cdpAlive(origin: string, timeoutMs = 2000): Promise<boolea
   catch { return false; }
 }
 
+/** Short git HEAD of this package copy, or undefined when it is not a checkout or git is slow/absent. */
+function head(): string | undefined {
+  if (!existsSync(join(root, '.git'))) return undefined;
+  try { return execFileSync('git', ['-C', root, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8', timeout: 2000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || undefined; }
+  catch { return undefined; }
+}
+
 export function installation() {
-  return { installed: existsSync(python), version: 'browser-harness 0.1.13',
+  const sha = head();
+  return { root: realpathSync.native(root), ...(sha ? { head: sha } : {}), installed: existsSync(python), version: 'browser-harness 0.1.13',
     defaultEndpoint: endpoint(), runtimeHome: process.env.PI_BROWSER_HARNESS_HOME ?? join(homedir(), '.cache', 'pi-browser-harness'),
     setup: `cd ${root} && npm run setup`, start: `cd ${root} && npm run browser -- start`,
     scope: 'Owned tabs only; status never attaches or launches (it only asks each owned tab\'s browser /json/version). Local CDP. No cloud, telemetry or recordings.' };

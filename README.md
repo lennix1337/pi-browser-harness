@@ -24,6 +24,8 @@ O launcher imprime um endpoint de porta dinâmica. Passe esse endpoint em `brows
 
 O navegador isolado fecha sozinho depois de 30 minutos sem nenhuma ação de página (`open`, `navigate`, `click`...; `status` e `read` não contam). A extensão confere a cada minuto, fecha só a instância registrada em `browser.json` cuja identidade confere, com o mesmo fechamento verificado do `stop`, e mantém o perfil. `PI_BROWSER_HARNESS_IDLE_MINUTES` muda o prazo; `0` desliga.
 
+`PI_BROWSER_HARNESS_ONLY_ROOT=<raiz do pacote>` (para benchmarks que carregam duas cópias do pacote com `pi -e`): só a cópia cuja raiz resolve para esse caminho registra `browser_harness`; qualquer outra não registra nada (nem ferramenta, nem timer ocioso). Vazio ou ausente mantém o comportamento normal. `status` informa `root` e, em um checkout, `head`.
+
 ## Padrão de uso
 
 Leia [a skill](skills/pi-browser-harness/SKILL.md) para o fluxo e regras DentAI. Use **Code Mode** para agrupar I/O independente ou combinar aquisição e cálculo já conhecido; use **REPL** para cálculo puro com estado entre etapas dependentes; use **Browser Harness** quando precisa interagir com o navegador ou renderização JS. Pesquisa/leitura pública simples continua nas ferramentas web.
