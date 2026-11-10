@@ -20,6 +20,8 @@ const mutants = [
   ['paging-offset', 'src/controller.ts', 'if (!Number.isInteger(offset) || offset < 0 || offset > value.length || !Number.isInteger(limit) || limit < 1 || limit > 12000)', 'if (false)'],
   ['shutdown-close', 'src/index.ts', 'await Promise.all([...bridges.values()].map(bridge => bridge.close()));', '', 'test/extension-lifecycle.test.ts'],
   ['idle-window', 'scripts/browser.mjs', "if (idle < idleMs) return { status: 'in_use', idleMs: idle };", '', 'test/browser.test.mjs'],
+  ['only-root-inverted', 'src/index.ts', 'canonical(only) === canonical(root)', 'canonical(only) !== canonical(root)', 'test/only-root.test.ts'],
+  ['only-root-removed', 'src/index.ts', 'if (!selected()) return;', '', 'test/only-root.test.ts'],
   ['idle-reads-count', 'src/index.ts', "const busy = params.action !== undefined && !['status', 'read'].includes(params.action);", 'const busy = true;', 'test/extension-lifecycle.test.ts'],
 ];
 for (const [name, file, before, after, testFile = 'test/controller.test.ts'] of mutants) {
