@@ -23,7 +23,7 @@ browser_harness({action:"open", endpoint:"http://127.0.0.1:PORT", url:"https://e
 browser_harness({action:"state", tab:"ID"})                      // read-only: [id] role "name" lines
 browser_harness({action:"exec", tab:"ID", code:'click(12)\ntype(15, "Example", enter=True)'})
 browser_harness({action:"exec", tab:"ID", code:'wait_for("Saved")\njs("document.title")'})
-browser_harness({action:"screenshot", tab:"ID"})                 // read-only: JPEG, longest side 1280
+browser_harness({action:"screenshot", tab:"ID"})                 // read-only: JPEG, longest side 1280 (a hidden tab that gives no frame in 4 s is brought forward once)
 browser_harness({action:"close", tab:"ID"})
 ```
 

@@ -17,11 +17,12 @@ export function endpoint(value = process.env.PI_BROWSER_HARNESS_CDP_URL ?? 'http
 export type Request = Record<string, unknown> & { action: string; endpoint: string };
 /**
  * Host-side deadline of one request. A cell gets its own timeout plus a margin for the reply; a screenshot gets the
- * upstream IPC bound (60 s, not the ordinary 5 s) plus margin. The worker is killed when it passes.
+ * first capture wait (4 s) plus the retry after bringing the tab forward (upstream IPC bound, 60 s) plus margin. The worker
+ * is killed when it passes.
  */
 export const bridgeDeadline = (request: { action: string; timeout?: unknown }) =>
   request.action === 'exec' ? (typeof request.timeout === 'number' ? request.timeout : 30) * 1000 + 5000
-    : request.action === 'screenshot' ? 75000 : 45000;
+    : request.action === 'screenshot' ? 90000 : 45000;
 
 /** Whether a CDP origin still answers: one GET of /json/version, never a page attach. */
 export async function cdpAlive(origin: string, timeoutMs = 2000): Promise<boolean> {

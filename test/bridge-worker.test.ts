@@ -231,6 +231,6 @@ test('a cell gets its own timeout plus a margin before the worker is killed; scr
   assert.equal(bridgeDeadline({ action: 'exec', timeout: 30 }), 35000);
   assert.equal(bridgeDeadline({ action: 'exec', timeout: 120 }), 125000);
   assert.equal(bridgeDeadline({ action: 'exec' }), 35000);
-  assert.equal(bridgeDeadline({ action: 'screenshot' }), 75000);
+  assert.equal(bridgeDeadline({ action: 'screenshot' }), 90000);
   assert.equal(bridgeDeadline({ action: 'state' }), 45000);
 });

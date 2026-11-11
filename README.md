@@ -1,6 +1,6 @@
 # Pi Browser Harness
 
-Controle nativo de navegador no Pi, usando [browser-use/browser-harness](https://github.com/browser-use/browser-harness) **0.1.13**. Ferramenta `browser_harness` e skill `pi-browser-harness`, no formato do browser-use 1.0: sete ações (`status`, `open`, `exec`, `state`, `screenshot`, `close`, `read`). `exec` roda uma célula Python numa aba própria, com variáveis que persistem por aba e o estado acessível compacto (`[id] papel "nome"`) impresso depois de cada passo que age. `state` e `screenshot` (JPEG, lado maior 1280) só leem.
+Controle nativo de navegador no Pi, usando [browser-use/browser-harness](https://github.com/browser-use/browser-harness) **0.1.13**. Ferramenta `browser_harness` e skill `pi-browser-harness`, no formato do browser-use 1.0: sete ações (`status`, `open`, `exec`, `state`, `screenshot`, `close`, `read`). `exec` roda uma célula Python numa aba própria, com variáveis que persistem por aba e o estado acessível compacto (`[id] papel "nome"`) impresso depois de cada passo que age. `state` e `screenshot` (JPEG, lado maior 1280) só leem. O Chrome não desenha uma aba que não é a da frente da janela: se a captura não responde em 4 s, a aba é trazida para a frente e a captura é pedida de novo, uma vez.
 
 ## Instalação
 

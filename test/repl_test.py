@@ -46,7 +46,7 @@ class Harness:
     """A recording double of browser_harness.helpers.cdp/_send, installed for the duration of a test."""
 
     def __init__(self, test):
-        self.calls, self.events, self.fail = [], [], {}
+        self.calls, self.events, self.fail, self.stalls, self.timeouts = [], [], {}, {}, {}
         self.answers = {"Target.getTargetInfo": {"targetInfo": {"url": "http://127.0.0.1:8080/page"}}}
         from browser_harness import helpers
         self.helpers = helpers
@@ -56,6 +56,10 @@ class Harness:
 
     def cdp(self, method, session_id=None, _response_timeout=5.0, **params):
         self.calls.append((method, session_id, params))
+        self.timeouts.setdefault(method, []).append(_response_timeout)
+        if self.stalls.get(method):
+            self.stalls[method] -= 1
+            raise TimeoutError(f"{method} timed out after {_response_timeout:g}s waiting for the daemon")
         if method in self.fail:
             raise RuntimeError(self.fail[method])
         return self.answers.get(method, {})
@@ -268,6 +272,34 @@ class Output(unittest.TestCase):
         self.assertEqual(capture[2]["clip"]["height"], 4000)
         self.assertAlmostEqual(capture[2]["clip"]["scale"], 0.32)
         self.assertEqual(full["format"], "jpeg")
+
+    def test_a_capture_that_stalls_on_a_hidden_tab_is_retried_once_after_bringing_the_tab_forward(self):
+        harness, _, tab = make_tab(self)
+        harness.answers["Page.getLayoutMetrics"] = {"cssVisualViewport": {"clientWidth": 800, "clientHeight": 600}, "cssContentSize": {"width": 800, "height": 600}}
+        harness.answers["Page.captureScreenshot"] = {"data": "AAAA"}
+        harness.stalls["Page.captureScreenshot"] = 1
+        shot = tab.screenshot(full=False, max_width=1280)
+        self.assertEqual(shot["data"], "AAAA")
+        methods = [m for m in harness.methods() if m in ("Page.captureScreenshot", "Page.bringToFront")]
+        self.assertEqual(methods, ["Page.captureScreenshot", "Page.bringToFront", "Page.captureScreenshot"])
+        first, second = harness.timeouts["Page.captureScreenshot"]
+        self.assertLess(first, 20, "the first attempt fails fast instead of waiting a minute for a frame that never comes")
+        self.assertGreater(second, first)
+
+    def test_a_capture_that_answers_never_moves_the_tab_to_the_front(self):
+        harness, _, tab = make_tab(self)
+        harness.answers["Page.getLayoutMetrics"] = {"cssVisualViewport": {"clientWidth": 800, "clientHeight": 600}, "cssContentSize": {"width": 800, "height": 600}}
+        harness.answers["Page.captureScreenshot"] = {"data": "AAAA"}
+        tab.screenshot(full=False, max_width=1280)
+        self.assertNotIn("Page.bringToFront", harness.methods())
+
+    def test_a_capture_that_stalls_again_after_the_retry_is_reported_not_retried_forever(self):
+        harness, _, tab = make_tab(self)
+        harness.answers["Page.getLayoutMetrics"] = {"cssVisualViewport": {"clientWidth": 800, "clientHeight": 600}, "cssContentSize": {"width": 800, "height": 600}}
+        harness.stalls["Page.captureScreenshot"] = 5
+        with self.assertRaises(TimeoutError):
+            tab.screenshot(full=False, max_width=1280)
+        self.assertEqual(harness.methods().count("Page.captureScreenshot"), 2)
 
 
 if __name__ == "__main__":

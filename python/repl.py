@@ -26,6 +26,8 @@ import ax  # noqa: E402  vendored from browser-use 1.0.0, never edited
 OUTPUT_LIMIT = 1_000_000
 PAGE_TIMEOUT = 40.0
 NETWORK_LIMIT = 256
+CAPTURE_TIMEOUT = 4.0
+CAPTURE_RETRY_TIMEOUT = 60.0
 
 BLOCKED_MODULES = {"browser_harness", "websockets", "cdp_use", "socket", "subprocess", "ctypes", "importlib", "multiprocessing"}
 BLOCKED_OS = {"system", "popen", "startfile", "execv", "execve", "execl", "execle", "execlp", "execvp", "spawnv", "spawnl",
@@ -521,8 +523,18 @@ class Tab:
         scale = min(1.0, max_width / max(width, height))
         params = {"format": "jpeg", "quality": 80, "captureBeyondViewport": bool(full),
                   "clip": {"x": 0, "y": 0, "width": width, "height": height, "scale": scale}}
-        shot = self._read("Page.captureScreenshot", _response_timeout=60.0, **params)
+        shot = self._capture(params)
         return {"data": shot["data"], "format": "jpeg", "width": round(width * scale), "height": round(height * scale), "url": self._page_url()}
+
+    def _capture(self, params):
+        """Chrome renders no frame for a tab that is not the front tab of its window, so a capture can wait for ever (seen on
+        Windows with several tabs open). The tab is ours and a capture changes nothing, so the first wait is short; on a miss
+        the tab is brought forward and the capture asked again, once."""
+        try:
+            return self._read("Page.captureScreenshot", _response_timeout=CAPTURE_TIMEOUT, **params)
+        except TimeoutError:
+            self._read("Page.bringToFront")
+            return self._read("Page.captureScreenshot", _response_timeout=CAPTURE_RETRY_TIMEOUT, **params)
 
     def close(self):
         try:
