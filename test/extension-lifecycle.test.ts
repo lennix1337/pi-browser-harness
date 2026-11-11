@@ -30,7 +30,7 @@ test('session_shutdown ends the session worker and waits until it exited', async
   process.env.FAKE_LOG = log;
   try {
     const used = join(dir, 'last-used');
-    const { handlers, tool } = loadExtension({ bridge: { command: { python: process.execPath, args: [fixture] }, closeGraceMs: 2000 },
+    const { handlers, tool } = loadExtension({ bridge: { command: { python: process.execPath, args: [fixture], passEnv: ['FAKE_LOG'] }, closeGraceMs: 2000 },
       idle: { minutes: 0, activity: used, record: join(dir, 'browser.json') } });
     const ctx = { sessionManager: { getSessionId: () => 'session-1' } };
     await tool.execute('call-0', { action: 'status' }, undefined, undefined, ctx);

@@ -35,6 +35,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   switch (message.action) {
     case 'echo': return answer(reply);
     case 'open': return answer({ id: message.id, ok: true, result: { target: 'fake-tab', session: 'fake-session' } });
+    case 'env': return answer({ id: message.id, ok: true, result: { env: process.env } });
     case 'crash': return process.exit(3);
     case 'hang': return;
     case 'big': return answer({ id: message.id, ok: true, result: 'x'.repeat(9 * 1024 * 1024) });
