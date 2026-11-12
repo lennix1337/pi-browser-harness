@@ -245,6 +245,44 @@ class Serve(unittest.TestCase):
             with self.assertRaises(ValueError):
                 bridge.configure(ENDPOINT)
 
+    def test_type_builtin_works_inside_a_cell(self):
+        with tempfile.TemporaryDirectory() as root:
+            _, outbox, _, _ = self.run_worker(
+                [self.hello, self.cell(1, "type(42).__name__"), self.cell(2, "type('Dyn', (), {'x': 7}).x")],
+                root,
+                self.page,
+            )
+            self.assertEqual(outbox[1]["result"]["status"], "ok")
+            self.assertEqual(outbox[1]["result"]["output"], "'int'\n")
+            self.assertEqual(outbox[2]["result"]["status"], "ok")
+            self.assertEqual(outbox[2]["result"]["output"], "7\n")
+
+
+class TypeDispatch(unittest.TestCase):
+    def test_dispatches_builtin_type_and_tab_helper(self):
+        import repl
+
+        calls = []
+
+        def helper(id, text, enter=False):
+            calls.append((id, text, enter))
+            return f"typed:{id}:{text}:{enter}"
+
+        self.assertIs(repl._type_dispatch(helper, 123), int)
+        cls = repl._type_dispatch(helper, "Dyn", (), {"x": 7})
+        self.assertIsInstance(cls, type)
+        self.assertEqual(cls.x, 7)
+        self.assertEqual(calls, [])
+
+        self.assertEqual(repl._type_dispatch(helper, 5, "hello"), "typed:5:hello:False")
+        self.assertEqual(repl._type_dispatch(helper, 5, "hello", True), "typed:5:hello:True")
+        self.assertEqual(repl._type_dispatch(helper, 5, text="hi", enter=True), "typed:5:hi:True")
+        self.assertEqual(repl._type_dispatch(helper, 5, text="only-kw"), "typed:5:only-kw:False")
+        self.assertEqual(
+            calls,
+            [(5, "hello", False), (5, "hello", True), (5, "hi", True), (5, "only-kw", False)],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
