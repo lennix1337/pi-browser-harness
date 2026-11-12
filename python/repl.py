@@ -6,6 +6,7 @@ ownership itself stays in the TypeScript controller, which only ever sends this 
 """
 import ast
 import base64
+import builtins
 import contextlib
 import io
 import json
@@ -63,6 +64,16 @@ def check_code(code):
             raise Refused(f"refused: cell uses {node.id}; cells reach the browser only through the helpers and cdp()")
         if isinstance(node, ast.Attribute) and (node.attr in BLOCKED_NAMES or (node.attr in BLOCKED_OS and isinstance(node.value, ast.Name) and node.value.id == "os")):
             raise Refused(f"refused: cell uses {node.attr}; cells reach the browser only through the helpers and cdp()")
+
+
+def _type_dispatch(helper, *args, **kwargs):
+    """Dispatch `type(...)` to builtins.type for 1-arg or 3-arg class creation, otherwise to the tab helper."""
+    if not kwargs:
+        if len(args) == 1:
+            return builtins.type(args[0])
+        if len(args) == 3 and isinstance(args[0], str) and isinstance(args[1], tuple):
+            return builtins.type(*args)
+    return helper(*args, **kwargs)
 
 
 def is_effect(method):
@@ -304,9 +315,12 @@ class Tab:
             tab.effect = True
             return tab.ax.click(id)
 
-        def type_(id, text, enter=False):
+        def _type_helper(id, text, enter=False):
             tab.effect = True
             return tab.ax.type(id, text, enter=enter)
+
+        def type_(*args, **kwargs):
+            return _type_dispatch(_type_helper, *args, **kwargs)
 
         def press(key):
             code, text = KEYS.get(key, (None, None))
