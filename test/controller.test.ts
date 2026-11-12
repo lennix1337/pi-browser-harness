@@ -295,3 +295,17 @@ test('an unknown action or field names itself and lists what the action accepts'
   assert.match(action.value.message, /unknown action "stat"; actions: status, open, exec, state, screenshot, close, read/i);
   assert.equal(calls.length, 1);
 });
+
+test('a cell that dies mid-run returns the output it had printed and reports it as progress', async () => {
+  const controller = new Controller(async (request, _signal, progress) => {
+    if (request.action === 'open') return { target: 't', session: 's' };
+    progress?.('tab 1\n'); progress?.('tab 2\n');
+    throw new Error('Aborted; external outcome uncertain');
+  });
+  await controller.execute({ action: 'open' });
+  const seen: string[] = [];
+  const result = await controller.execute({ action: 'exec', tab: 't', code: 'loop()' }, undefined, text => seen.push(text));
+  assert.equal(result.value.status, 'outcome_uncertain');
+  assert.equal(result.value.output, 'tab 1\ntab 2\n');
+  assert.deepEqual(seen, ['tab 1\n', 'tab 1\ntab 2\n']);
+});

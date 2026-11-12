@@ -37,7 +37,7 @@ Every result starts with a JSON header line `{"status","tab","url"}`; the cell o
 - Use `wait_for` and `wait_for_network_idle` instead of hand-written `setTimeout` sleeps. A tab is opened in the background but told it has focus, so timers run at normal speed.
 - Batch the steps you already know into one cell; stop the cell where a decision needs the page. Output over 12,000 characters is cut in the middle and kept whole behind a receipt: continue with `read` instead of repeating the action.
 - Dialogs: `alert` and `beforeunload` are accepted automatically and reported in the output. `confirm` and `prompt` are dismissed and reported unless `dialog(accept=True)` ran first.
-- A cell that exceeds `timeout` (default 30 s, max 300) kills the worker: `outcome_uncertain`, "REPL restarted, variables lost". The tab and page survive.
+- A cell that exceeds `timeout` (default 30 s, max 300) kills the worker: `outcome_uncertain`, "REPL restarted, variables lost". The tab and page survive. What the cell had printed up to then comes back as `output`, and shows live in the UI while it runs; `print` the step you are on, and split a cell that would run past ~60 s into steps.
 - Requests of one session run one at a time in order; later calls wait their turn.
 
 ### Safety (a mistake guard, not a sandbox)
