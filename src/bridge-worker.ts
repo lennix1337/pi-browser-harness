@@ -7,7 +7,8 @@ import { bridgeDeadline, python, root, type Request } from './client.ts';
 /**
  * Persistent bridge: one Python worker per endpoint, reused by every action of a Pi session, instead of one process
  * per action. The worker speaks JSON lines (`python/bridge.py --serve`): a hello with the endpoint, then requests and
- * pings, each answered with the same `id`.
+ * pings, each answered with the same `id`. While a cell runs, the worker may send `{id, progress}` lines with what the
+ * cell printed; they are handed to the caller and do not settle the request.
  *
  * Safety rules, unchanged from the one-shot bridge:
  * - an action is sent to a worker only after that worker answered a ping, so a dead or unresponsive worker is replaced
@@ -34,7 +35,7 @@ const EXTERNAL = 'external outcome uncertain. Inspect before retrying.';
 const UNCERTAIN = 'outcome uncertain. Inspect before retrying.';
 const TOO_LARGE = 'Response exceeds 8 MiB; outcome uncertain. Narrow the query before continuing.';
 
-type Pending = { id: number; resolve: (value: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout; signal?: AbortSignal; onAbort?: () => void };
+type Pending = { id: number; resolve: (value: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout; signal?: AbortSignal; onAbort?: () => void; onProgress?: (text: string) => void };
 type State = 'running' | 'killed' | 'exited';
 
 class Worker {
@@ -85,13 +86,13 @@ class Worker {
   }
 
   /** One request in flight at a time. Resolves with the reply's `result`; rejects with the bridge's error. */
-  request(payload: Record<string, unknown>, deadlineMs: number, signal?: AbortSignal): Promise<any> {
+  request(payload: Record<string, unknown>, deadlineMs: number, signal?: AbortSignal, onProgress?: (text: string) => void): Promise<any> {
     if (signal?.aborted) return Promise.reject(new Error('Aborted before dispatch'));
     if (!this.alive) return Promise.reject(new Error(`Bridge worker is not running; ${UNCERTAIN}`));
     if (this.pending) return Promise.reject(new Error('Bridge worker busy; serialize interactions.'));
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
-      const pending: Pending = { id, resolve, reject, signal, timer: setTimeout(() => this.kill(`Deadline exceeded; ${EXTERNAL}`), deadlineMs) };
+      const pending: Pending = { id, resolve, reject, signal, onProgress, timer: setTimeout(() => this.kill(`Deadline exceeded; ${EXTERNAL}`), deadlineMs) };
       if (signal) {
         pending.onAbort = () => this.kill(`Aborted; ${EXTERNAL}`);
         signal.addEventListener('abort', pending.onAbort, { once: true });
@@ -158,6 +159,7 @@ class Worker {
     let message: any;
     try { message = JSON.parse(line); } catch { return this.kill(`Bridge protocol violation: output was not a protocol message; ${UNCERTAIN}`); }
     if (!this.pending || message?.id !== this.pending.id) return this.kill(`Bridge protocol violation: unexpected reply; ${UNCERTAIN}`);
+    if (typeof message.progress === 'string') return void this.pending.onProgress?.(message.progress);
     if (message.control === 'error' || message.ok === false) return this.settle(new Error(String(message.error ?? 'Bridge worker error')));
     this.settle(undefined, 'result' in message ? message.result : message.control);
   }
@@ -187,8 +189,8 @@ export class BridgeSession {
   }
 
   /** Actions of one session run one at a time, in order. */
-  send(request: Request, signal?: AbortSignal): Promise<any> {
-    const run = this.queue.then(() => this.dispatch(request, signal));
+  send(request: Request, signal?: AbortSignal, onProgress?: (text: string) => void): Promise<any> {
+    const run = this.queue.then(() => this.dispatch(request, signal, onProgress));
     this.queue = run.catch(() => undefined);
     return run;
   }
@@ -201,11 +203,11 @@ export class BridgeSession {
     return { ended: outcomes.filter(outcome => outcome === 'ended').length, killed: outcomes.filter(outcome => outcome === 'killed').length };
   }
 
-  private async dispatch(request: Request, signal?: AbortSignal): Promise<any> {
+  private async dispatch(request: Request, signal?: AbortSignal, onProgress?: (text: string) => void): Promise<any> {
     if (signal?.aborted) throw new Error('Aborted before dispatch');
     const worker = await this.workerFor(String(request.endpoint));
     if (signal?.aborted) throw new Error('Aborted before dispatch');
-    return worker.request(request, this.deadlineMs ?? bridgeDeadline(request), signal);
+    return worker.request(request, this.deadlineMs ?? bridgeDeadline(request), signal, onProgress);
   }
 
   private async workerFor(endpoint: string): Promise<Worker> {

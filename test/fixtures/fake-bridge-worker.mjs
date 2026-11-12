@@ -38,6 +38,11 @@ createInterface({ input: process.stdin }).on('line', line => {
     case 'env': return answer({ id: message.id, ok: true, result: { env: process.env } });
     case 'crash': return process.exit(3);
     case 'hang': return;
+    case 'chatty': { // two progress lines, then silence (a long cell that never answers)
+      write({ id: message.id, progress: 'one\n' });
+      setTimeout(() => write({ id: message.id, progress: 'two\n' }), 30);
+      return;
+    }
     case 'big': return answer({ id: message.id, ok: true, result: 'x'.repeat(9 * 1024 * 1024) });
     case 'noise': process.stdout.write('not a protocol message\n'); return answer(reply);
     case 'split': {

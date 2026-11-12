@@ -74,6 +74,8 @@ class Serve(unittest.TestCase):
                 patch("browser_harness.helpers._send", send):
             opener.return_value.open.side_effect = urlopen or (lambda *args, **kwargs: version_response())
             code = bridge.serve(read, outbox.append)
+        self.progress = [m for m in outbox if "progress" in m]
+        outbox[:] = [m for m in outbox if "progress" not in m]
         return code, outbox, calls, ensure
 
     hello = {"id": 0, "control": "hello", "endpoint": ENDPOINT}
@@ -124,6 +126,13 @@ class Serve(unittest.TestCase):
             self.assertEqual([reply["id"] for reply in outbox], [0, 1, 2])
             self.assertEqual(outbox[2]["result"]["output"], "42\n")
             self.assertEqual(outbox[2]["result"]["url"], "http://127.0.0.1:8080/p")
+
+    def test_a_running_cell_streams_what_it_prints_before_its_reply(self):
+        with tempfile.TemporaryDirectory() as root:
+            _, outbox, _, _ = self.run_worker([self.hello, self.cell(1, "print('a')\nprint('b')")], root, self.page)
+            self.assertEqual("".join(m["progress"] for m in self.progress), "a\nb\n")
+            self.assertTrue(all(m["id"] == 1 for m in self.progress))
+            self.assertEqual(outbox[1]["result"]["output"], "a\nb\n")
 
     def test_a_cell_error_is_an_ok_reply_carrying_status_error_and_the_worker_keeps_serving(self):
         with tempfile.TemporaryDirectory() as root:

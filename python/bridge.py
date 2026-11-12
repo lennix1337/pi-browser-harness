@@ -180,7 +180,7 @@ class Worker:
         self.tab({"target": target, "session": session}, fresh=True)
         return {"target": target, "session": session}
 
-    def dispatch(self, request):
+    def dispatch(self, request, on_output=None):
         action = request.get("action")
         if action == "open":
             return self.open()
@@ -196,7 +196,7 @@ class Worker:
         if action == "exec":
             if not isinstance(request.get("code"), str):
                 raise ValueError("exec needs code")
-            return tab.run(request["code"])
+            return tab.run(request["code"], on_output)
         if action == "state":
             return tab.state(max=request.get("max", 3000))
         if action == "screenshot":
@@ -228,6 +228,25 @@ class Worker:
             self.router.helpers._send({"meta": "shutdown"})
         except Exception:
             pass
+
+
+PROGRESS_LIMIT = 200_000
+
+
+def progress_to(write, request_id):
+    """Streams what a cell prints as `{id, progress}` lines, so the host can show it while the cell runs and keep it if the
+    cell is aborted. Capped like the host's copy; a broken channel never fails the cell."""
+    sent = [0]
+
+    def emit(text):
+        if sent[0] >= PROGRESS_LIMIT:
+            return
+        sent[0] += len(text)
+        try:
+            write({"id": request_id, "progress": text})
+        except Exception:
+            sent[0] = PROGRESS_LIMIT
+    return emit
 
 
 def serve(read, write, start_router=False):
@@ -267,7 +286,7 @@ def serve(read, write, start_router=False):
                     raise ValueError(f"removed action {request['action']}; use exec (click(id), type(id, text), js(expr), goto(url), network(...)) or state")
                 if request.get("action") != "shutdown":
                     prepare(endpoint)
-                write({"id": request.get("id"), "ok": True, "result": worker.dispatch(request)})
+                write({"id": request.get("id"), "ok": True, "result": worker.dispatch(request, progress_to(write, request.get("id")))})
             except Exception as error:
                 write({"id": request.get("id") if isinstance(request, dict) else None, "ok": False, "error": str(error)[:500]})
     finally:

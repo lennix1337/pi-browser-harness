@@ -72,18 +72,18 @@ function extension(pi: ExtensionAPI, options: ExtensionOptions) {
       offset: Type.Optional(Type.Integer({ minimum: 0 })),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12000 })),
     }, { additionalProperties: false }),
-    async execute(_id, params, signal, _update, ctx) {
+    async execute(_id, params, signal, update, ctx) {
       const session = ctx.sessionManager.getSessionId();
       let controller = sessions.get(session);
       if (!controller) {
         if (sessions.size >= 32) throw new Error('32 browser session controllers retained; reload only after finishing/recording existing browser work.');
         const bridge = new BridgeSession(options.bridge);
         bridges.set(session, bridge);
-        sessions.set(session, controller = new Controller((request, signal) => bridge.send(request, signal)));
+        sessions.set(session, controller = new Controller((request, signal, progress) => bridge.send(request, signal, progress)));
       }
       const busy = params.action !== undefined && !['status', 'read'].includes(params.action);
       if (busy) used();
-      const result = await controller.execute(params, signal);
+      const result = await controller.execute(params, signal, text => update?.({ content: [{ type: 'text', text: text.length > 1500 ? `...${text.slice(-1500)}` : text }], details: { status: 'running' } }));
       if (busy) used();
       const content: ({ type: 'text'; text: string } | { type: 'image'; mimeType: string; data: string })[] = [{ type: 'text', text: render(result.value) }];
       if (result.image) content.push({ type: 'image', mimeType: result.mimeType ?? 'image/jpeg', data: result.image });

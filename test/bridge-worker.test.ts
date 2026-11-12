@@ -115,6 +115,17 @@ test('aborting an in-flight request kills the worker and reports outcome uncerta
   await s.close();
 });
 
+test('progress lines of a running cell reach the caller; an abort keeps what was already reported', async () => {
+  const s = session();
+  await echo(s, 'warm');
+  const abort = new AbortController(), seen: string[] = [];
+  const pending = s.send({ action: 'chatty', endpoint: ENDPOINT }, abort.signal, text => seen.push(text));
+  setTimeout(() => abort.abort(), 200);
+  await assert.rejects(pending, /Aborted; external outcome uncertain/);
+  assert.deepEqual(seen, ['one\n', 'two\n']);
+  await s.close();
+});
+
 test('an action aborted before dispatch never reaches a worker', async () => {
   const s = session();
   const abort = new AbortController();

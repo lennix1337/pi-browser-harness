@@ -485,11 +485,12 @@ class Tab:
             result["error"] = error
         return result
 
-    def run(self, code):
+    def run(self, code, on_output=None):
+        """`on_output` is told each piece of text the cell prints as it happens, so a cell that never ends still shows where it was."""
         self.effect = False
         self.called = False
         self.buffer = []
-        stdout = _Writer(self.buffer)
+        stdout = _Writer(self.buffer, on_output)
         try:
             check_code(code)
             compiled = self._compile(code)
@@ -559,12 +560,15 @@ class Tab:
 
 
 class _Writer(io.TextIOBase):
-    def __init__(self, sink):
+    def __init__(self, sink, notify=None):
         self.sink = sink
+        self.notify = notify
 
     def writable(self):
         return True
 
     def write(self, text):
         self.sink.append(text)
+        if self.notify is not None and text:
+            self.notify(text)
         return len(text)

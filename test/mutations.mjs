@@ -8,7 +8,7 @@ const mutants = [
   ['removed-action', 'src/controller.ts', 'if (removed.has(action)) throw', 'if (false) throw'],
   ['explicit-session', 'src/controller.ts', 'const request: Request = { action, ...tab };', 'const request: Request = { action, ...tab, session: undefined };'],
   ['endpoint', 'src/client.ts', "!['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)", 'false'],
-  ['no-replay', 'src/controller.ts', 'const result = await this.send(request, signal);', 'let result; try { result = await this.send(request, signal); } catch { result = await this.send(request, signal); }'],
+  ['no-replay', 'src/controller.ts', 'const result = await this.send(request, signal, onOutput);', 'let result; try { result = await this.send(request, signal, onOutput); } catch { result = await this.send(request, signal, onOutput); }'],
   ['close-confirmation', 'src/controller.ts', 'if (result?.success !== true)', 'if (false)'],
   ['page-url', 'src/controller.ts', "if (!['https:', 'http:'].includes(u.protocol) || u.username || u.password)", 'if (false)'],
   ['fifo-queue', 'src/controller.ts', 'release = await this.turn(signal);', 'release = () => undefined;'],

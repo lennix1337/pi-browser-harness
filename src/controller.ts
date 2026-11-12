@@ -3,7 +3,8 @@ import { cdpAlive, endpoint, installation, type Request } from './client.ts';
 
 export type Args = { action?: string; endpoint?: string; tab?: string; url?: string; code?: string; timeout?: number;
   max?: number; full?: boolean; maxWidth?: number; receipt?: string; offset?: number; limit?: number };
-export type Transport = (request: Request, signal?: AbortSignal) => Promise<any>;
+export type Progress = (text: string) => void;
+export type Transport = (request: Request, signal?: AbortSignal, progress?: Progress) => Promise<any>;
 export type Probe = (origin: string) => Promise<boolean>;
 export type Outcome = { value: Record<string, any>; image?: string; mimeType?: string; isError: boolean };
 
@@ -17,6 +18,8 @@ const removed = new Set(['navigate', 'inspect', 'click', 'type', 'evaluate', 'ne
 const MIGRATION = 'inspect -> state; click/type/evaluate/navigate -> exec with click(id)/type(id,text)/js(expr)/goto(url); '
   + 'network -> exec with network(filter); intercept_* -> exec with intercept(rules)/intercept_status()/intercept_stop().';
 export const OUTPUT_VIEW = 12000;
+/** What the host keeps of a running cell's output: enough to show where it was, not to hold a runaway loop in memory. */
+const PARTIAL_LIMIT = 200_000;
 const DEFAULT_TIMEOUT = 30, MAX_TIMEOUT = 300, MAX_CODE = 65536;
 
 function pageUrl(value: unknown): string {
@@ -102,8 +105,10 @@ export class Controller {
     return release;
   }
 
-  async execute(args: Args, signal?: AbortSignal): Promise<Outcome> {
+  /** `progress` receives the whole output a running cell has printed so far; an exec that dies keeps it as its output. */
+  async execute(args: Args, signal?: AbortSignal, progress?: Progress): Promise<Outcome> {
     const action = args.action ?? 'status';
+    let partial = '';
     let dispatched = false, release: (() => void) | undefined;
     try {
       if (removed.has(action)) throw new Error(`Action "${action}" was removed; ${MIGRATION}`);
@@ -125,7 +130,8 @@ export class Controller {
       if (action === 'state') request.max = args.max ?? 3000;
       if (action === 'screenshot') Object.assign(request, { full: args.full ?? false, maxWidth: args.maxWidth ?? 1280 });
       dispatched = true;
-      const result = await this.send(request, signal);
+      const onOutput = action === 'exec' ? (text: string) => { if (partial.length < PARTIAL_LIMIT) partial += text; progress?.(partial); } : undefined;
+      const result = await this.send(request, signal, onOutput);
       if (action === 'close') {
         if (result?.success !== true) throw new Error('Browser did not confirm tab closure. Inspect before retry.');
         this.tabs.delete(args.tab!);
@@ -151,6 +157,7 @@ export class Controller {
       const lost = dispatched && action === 'exec' && WORKER_LOST.test(text) ? ' REPL restarted, variables lost.' : '';
       return { value: { status: dispatched ? 'outcome_uncertain' : 'invalid_input', ...(args.tab ? { tab: args.tab } : {}),
         message: text + lost,
+        ...(partial ? this.view(partial) : {}),
         ...(dead ? { browser: 'unreachable' } : {}),
         tabs: [...this.tabs.keys()], next: { tool: 'browser_harness', arguments: { action: 'status' } },
         recovery: dead ? `The browser at ${origin} does not answer: it closed or crashed, and its tabs went with it. Start the isolated browser again (${installation().start}), open a new tab on the endpoint it prints, and read the page state there; do not replay effects.`
