@@ -3,8 +3,17 @@ import { test } from 'node:test';
 import { existsSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { closeConnection, waitForVersion, waitForClosed, executable, recordedBrowser, closeIdle, touch } from '../scripts/browser.mjs';
+import { closeConnection, waitForVersion, waitForClosed, executable, recordedBrowser, closeIdle, touch, readActivePort } from '../scripts/browser.mjs';
 
+test('a locked or half-written DevToolsActivePort means not ready yet; other read errors still fail', () => {
+  const failing = code => () => { throw Object.assign(new Error(code), { code }); };
+  assert.equal(readActivePort('x', failing('EBUSY')), null);
+  assert.equal(readActivePort('x', failing('ENOENT')), null);
+  assert.equal(readActivePort('x', () => '9222\n'), null);
+  assert.equal(readActivePort('x', () => ''), null);
+  assert.deepEqual(readActivePort('x', () => '9222\r\n/devtools/browser/abc\n'), { port: '9222', path: '/devtools/browser/abc' });
+  assert.throws(() => readActivePort('x', failing('EISDIR')), /EISDIR/);
+});
 test('explicit browser choice is respected; a missing executable never silently falls back', () => {
   assert.equal(executable('explicit-chrome', path => path === 'explicit-chrome'), 'explicit-chrome');
   assert.throws(() => executable('missing-chrome', () => false), /Configured browser executable does not exist/);
