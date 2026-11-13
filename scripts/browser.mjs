@@ -54,6 +54,15 @@ export async function recordedBrowser(file, probe = version) {
     return { saved, gone: true };
   }
 }
+// Chromium keeps DevToolsActivePort open while writing it: on Windows a read can hit EBUSY,
+// or see the port line before the path line. Both mean "not ready yet", not a failed launch.
+export function readActivePort(file, read = readFileSync) {
+  let text;
+  try { text = read(file, 'utf8'); }
+  catch (error) { if (['ENOENT', 'EBUSY', 'EPERM', 'EACCES'].includes(error.code)) return null; throw error; }
+  const [port, path] = text.trim().split(/\r?\n/);
+  return /^\d+$/.test(port ?? '') && path?.startsWith('/devtools/browser/') ? { port, path } : null;
+}
 async function start(headless) {
   const { saved, current, gone } = await recordedBrowser(record);
   if (saved && !gone) {
@@ -80,8 +89,9 @@ async function start(headless) {
   const deadline = Date.now() + 45000;
   while (Date.now() < deadline) {
     if (failure) throw failure;
-    if (existsSync(active)) {
-      const [port, path] = readFileSync(active, 'utf8').trim().split(/\r?\n/);
+    const ready = readActivePort(active);
+    if (ready) {
+      const { port, path } = ready;
       const endpoint = 'http://127.0.0.1:' + port;
       let info;
       try { info = await waitForVersion(endpoint, path, version, delay, deadline); }
