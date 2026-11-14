@@ -216,10 +216,13 @@ export async function closeIdle(file = record, used = activity, idleMs, io = {})
 
 if (process.argv[1] && resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase()) {
 const [action, flag] = process.argv.slice(2);
+let stream = process.stdout, code = 0, answer;
 try {
   if (!['start', 'stop', 'status'].includes(action) || (flag && !(action === 'start' && flag === '--headless')) || process.argv.length > 4) throw new Error('Usage: npm run browser -- start [--headless] | status | stop');
-  const result = action === 'start' ? await start(flag === '--headless') : action === 'stop' ? await stop()
+  answer = action === 'start' ? await start(flag === '--headless') : action === 'stop' ? await stop()
     : { status: existsSync(record) ? 'recorded' : 'not_started', ...(existsSync(record) ? JSON.parse(readFileSync(record, 'utf8')) : {}) };
-  console.log(JSON.stringify(result));
-} catch (error) { console.error(JSON.stringify({ status: 'error', message: error.message })); process.exitCode = 1; }
+} catch (error) { stream = process.stderr; code = 1; answer = { status: 'error', message: error.message }; }
+// The command is over once its answer is written. Leaving the exit to an empty event loop hands it to whatever is
+// still open: a browser that got Browser.close and never dropped its WebSocket kept `stop` running after the answer.
+stream.write(JSON.stringify(answer) + '\n', () => process.exit(code));
 }
