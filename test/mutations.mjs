@@ -19,6 +19,8 @@ const mutants = [
   ['daemon-per-session', 'src/bridge-worker.ts', ', PI_BROWSER_HARNESS_DAEMON: daemon }', ' }', 'test/bridge-worker.test.ts'],
   ['shutdown-close', 'src/index.ts', 'await Promise.all([...bridges.values()].map(bridge => bridge.close()));', '', 'test/extension-lifecycle.test.ts'],
   ['idle-window', 'scripts/browser.mjs', "if (idle < idleMs) return { status: 'in_use', idleMs: idle };", '', 'test/browser.test.mjs'],
+  ['failed-start-ends-tree', 'scripts/browser.mjs', 'kill = killTree,', "kill = pid => (process.kill(pid, 'SIGKILL'), true),", 'test/browser-start.test.mjs'],
+  ['failed-start-claim', 'scripts/browser.mjs', "return reported && !left() ? 'closed' : 'unconfirmed';", "return 'closed';", 'test/browser-start.test.mjs'],
   ['only-root-inverted', 'src/index.ts', 'canonical(only) === canonical(root)', 'canonical(only) !== canonical(root)', 'test/only-root.test.ts'],
   ['only-root-removed', 'src/index.ts', 'if (!selected()) return;', '', 'test/only-root.test.ts'],
   ['idle-reads-count', 'src/index.ts', "const busy = params.action !== undefined && !['status', 'read'].includes(params.action);", 'const busy = true;', 'test/extension-lifecycle.test.ts'],

@@ -22,6 +22,8 @@ npm run browser -- stop             # somente a instância própria identificada
 
 O launcher imprime um endpoint de porta dinâmica. Passe esse endpoint em `browser_harness({action:"open",endpoint:"http://127.0.0.1:PORT",url:"https://example.com"})`. `status` da ferramenta não inicia conexão/navegador. `PI_BROWSER_HARNESS_CDP_URL` pode configurar o endpoint padrão; não confunda a porta com comprovação do perfil. `PI_BROWSER_HARNESS_EXECUTABLE` seleciona um executável instalado, `PI_BROWSER_HARNESS_HOME` muda a pasta de estado/capturas (padrão: `~/.cache/pi-browser-harness`).
 
+Se o navegador que o `start` abriu não fica pronto (porta de depuração em 45 s, identidade do perfil), o `start` encerra esse processo e os filhos dele antes de falhar, e o erro diz que ele foi fechado: basta rodar `start` de novo. Quando o encerramento não pôde ser confirmado, o erro diz isso e traz o pid. O perfil criado fica, com o `browser.log`.
+
 O navegador isolado fecha sozinho depois de 30 minutos sem nenhuma ação de página (`open`, `exec`, `state`...; `status` e `read` não contam). A extensão confere a cada minuto, fecha só a instância registrada em `browser.json` cuja identidade confere, com o mesmo fechamento verificado do `stop`, e mantém o perfil. `PI_BROWSER_HARNESS_IDLE_MINUTES` muda o prazo; `0` desliga.
 
 `PI_BROWSER_HARNESS_ONLY_ROOT=<raiz do pacote>` (para benchmarks que carregam duas cópias do pacote com `pi -e`): só a cópia cuja raiz resolve para esse caminho registra `browser_harness`; qualquer outra não registra nada (nem ferramenta, nem timer ocioso). Vazio ou ausente mantém o comportamento normal. `status` informa `root` e, em um checkout, `head`.
