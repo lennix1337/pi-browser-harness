@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -63,45 +63,90 @@ export function readActivePort(file, read = readFileSync) {
   const [port, path] = text.trim().split(/\r?\n/);
   return /^\d+$/.test(port ?? '') && path?.startsWith('/devtools/browser/') ? { port, path } : null;
 }
-async function start(headless) {
-  const { saved, current, gone } = await recordedBrowser(record);
+// Always request a new ephemeral port from Chromium and read its profile-specific identity.
+// It cannot collide with, attach to, or replace an existing personal CDP port.
+function launchBrowser(profile, logFd, headless) {
+  return spawn(executable(), ['--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
+    '--user-data-dir=' + profile, '--no-first-run', '--no-default-browser-check',
+    ...(headless ? ['--headless=new'] : []), 'about:blank'], { detached: true, stdio: ['ignore', 'ignore', logFd], windowsHide: headless });
+}
+/** Whether `pid` (a process group when negative, POSIX only) still has a running process. */
+const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } };
+/**
+ * Ends one launched process and what descends from it: that pid only, never an image name or a scan of other
+ * processes. Returns whether the platform's kill reported success.
+ */
+function killTree(pid) {
+  // A parent-only kill leaves the browser's own child processes running; /T takes the tree.
+  if (process.platform === 'win32') return spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).status === 0;
+  // `detached` made the launched process a group leader, so its group is the tree. ESRCH: nothing of it is left.
+  try { process.kill(-pid, 'SIGKILL'); return true; } catch (error) { return error.code === 'ESRCH'; }
+}
+/**
+ * What became of the process a failed start had launched: 'closed' (ended here, nothing of it left running), 'exited'
+ * (it never ran or had ended by itself) or 'unconfirmed'. On Windows only taskkill's own report covers the descendants.
+ */
+async function endLaunched(child, kill, confirmMs) {
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return 'exited';
+  const reported = kill(child.pid);
+  const left = () => alive(child.pid) || (process.platform !== 'win32' && alive(-child.pid));
+  for (let waited = 0; left() && waited < confirmMs; waited += 50) await delay(50);
+  return reported && !left() ? 'closed' : 'unconfirmed';
+}
+const AFTER_FAILED_START = {
+  closed: pid => `the browser this start opened (pid ${pid}) was closed; start can be run again.`,
+  exited: pid => pid === undefined ? 'no browser process was started.' : `the browser process this start opened (pid ${pid}) had already exited.`,
+  unconfirmed: pid => `the browser this start opened (pid ${pid}) could not be confirmed closed; inspect pid ${pid} before starting again.`,
+};
+/**
+ * `io` is the test seam: `dir` holds the record and the profile, `launch` starts the process (it may be async),
+ * `readyMs` bounds the wait for its debugging port, `kill` ends the launched tree when that wait fails and
+ * `confirmMs` bounds the wait for that tree to be gone.
+ */
+export async function start(headless, io = {}) {
+  // A cold first launch (new profile, Windows CI runner) has taken over 15 s to write DevToolsActivePort.
+  const { dir = home, launch = launchBrowser, readyMs = 45000, kill = killTree, confirmMs = 2000 } = io;
+  const file = join(dir, 'browser.json');
+  const { saved, current, gone } = await recordedBrowser(file);
   if (saved && !gone) {
     if (current.webSocketDebuggerUrl !== saved.ws) throw new Error('Browser identity mismatch; refused to reuse. Inspect browser.json without killing other processes.');
     return { status: 'running', endpoint: saved.endpoint, profile: saved.profile };
   }
-  // Always request a new ephemeral port from Chromium and read its profile-specific identity.
-  // It cannot collide with, attach to, or replace an existing personal CDP port.
-  mkdirSync(home, { recursive: true });
+  mkdirSync(dir, { recursive: true });
   const { mkdtempSync } = await import('node:fs');
-  const profile = mkdtempSync(join(home, 'profile-'));
+  const profile = mkdtempSync(join(dir, 'profile-'));
   const log = join(profile, 'browser.log');
   const logFd = openSync(log, 'a');
-  const child = spawn(executable(), ['--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
-    '--user-data-dir=' + profile, '--no-first-run', '--no-default-browser-check',
-    ...(headless ? ['--headless=new'] : []), 'about:blank'], { detached: true, stdio: ['ignore', 'ignore', logFd], windowsHide: headless });
-  closeSync(logFd);
+  let child;
+  try { child = await launch(profile, logFd, headless); }
+  finally { closeSync(logFd); }
   let failure;
   child.once('error', error => { failure = error; });
   child.once('exit', code => { failure = new Error('Browser exited before readiness: ' + code); });
   child.unref();
-  const active = join(profile, 'DevToolsActivePort');
-  // A cold first launch (new profile, Windows CI runner) has taken over 15 s to write DevToolsActivePort.
-  const deadline = Date.now() + 45000;
-  while (Date.now() < deadline) {
-    if (failure) throw failure;
-    const ready = readActivePort(active);
-    if (ready) {
-      const { port, path } = ready;
-      const endpoint = 'http://127.0.0.1:' + port;
-      let info;
-      try { info = await waitForVersion(endpoint, path, version, delay, deadline); }
-      catch (error) { throw new Error(error.message + '; own browser log: ' + log); }
-      writeFileSync(record, JSON.stringify({ endpoint, ws: info.webSocketDebuggerUrl, profile, pid: child.pid }, null, 2));
-      return { status: 'started', endpoint, profile, configure: 'Set PI_BROWSER_HARNESS_CDP_URL to endpoint, or pass endpoint to browser_harness open.' };
+  try {
+    const active = join(profile, 'DevToolsActivePort');
+    const deadline = Date.now() + readyMs;
+    while (Date.now() < deadline) {
+      if (failure) throw failure;
+      const ready = readActivePort(active);
+      if (ready) {
+        const { port, path } = ready;
+        const endpoint = 'http://127.0.0.1:' + port;
+        let info;
+        try { info = await waitForVersion(endpoint, path, version, delay, deadline); }
+        catch (error) { throw new Error(error.message + '; own browser log: ' + log); }
+        writeFileSync(file, JSON.stringify({ endpoint, ws: info.webSocketDebuggerUrl, profile, pid: child.pid }, null, 2));
+        return { status: 'started', endpoint, profile, configure: 'Set PI_BROWSER_HARNESS_CDP_URL to endpoint, or pass endpoint to browser_harness open.' };
+      }
+      await delay(150);
     }
-    await delay(150);
+    throw new Error('Browser readiness timed out; own browser log: ' + log);
+  } catch (error) {
+    // A browser without a record is out of reach of stop and of the idle close: only this call can still end it.
+    const outcome = await endLaunched(child, kill, confirmMs);
+    throw new Error(`${error.message}; ${AFTER_FAILED_START[outcome](child.pid)}`, { cause: error });
   }
-  throw new Error('Browser readiness timed out. Inspect the newly created profile; outcome uncertain, no automatic restart.');
 }
 export async function closeConnection(url, Constructor = WebSocket) {
   return new Promise((resolve, reject) => {
@@ -171,10 +216,13 @@ export async function closeIdle(file = record, used = activity, idleMs, io = {})
 
 if (process.argv[1] && resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase()) {
 const [action, flag] = process.argv.slice(2);
+let stream = process.stdout, code = 0, answer;
 try {
   if (!['start', 'stop', 'status'].includes(action) || (flag && !(action === 'start' && flag === '--headless')) || process.argv.length > 4) throw new Error('Usage: npm run browser -- start [--headless] | status | stop');
-  const result = action === 'start' ? await start(flag === '--headless') : action === 'stop' ? await stop()
+  answer = action === 'start' ? await start(flag === '--headless') : action === 'stop' ? await stop()
     : { status: existsSync(record) ? 'recorded' : 'not_started', ...(existsSync(record) ? JSON.parse(readFileSync(record, 'utf8')) : {}) };
-  console.log(JSON.stringify(result));
-} catch (error) { console.error(JSON.stringify({ status: 'error', message: error.message })); process.exitCode = 1; }
+} catch (error) { stream = process.stderr; code = 1; answer = { status: 'error', message: error.message }; }
+// The command is over once its answer is written. Leaving the exit to an empty event loop hands it to whatever is
+// still open: a browser that got Browser.close and never dropped its WebSocket kept `stop` running after the answer.
+stream.write(JSON.stringify(answer) + '\n', () => process.exit(code));
 }
