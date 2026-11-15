@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { existsSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { closeConnection, waitForVersion, waitForClosed, executable, recordedBrowser, closeIdle, touch, readActivePort } from '../scripts/browser.mjs';
+import { closeConnection, waitForVersion, waitForClosed, executable, headlessExecutable, recordedBrowser, closeIdle, touch, readActivePort } from '../scripts/browser.mjs';
 
 test('a locked or half-written DevToolsActivePort means not ready yet; other read errors still fail', () => {
   const failing = code => () => { throw Object.assign(new Error(code), { code }); };
@@ -17,6 +17,23 @@ test('a locked or half-written DevToolsActivePort means not ready yet; other rea
 test('explicit browser choice is respected; a missing executable never silently falls back', () => {
   assert.equal(executable('explicit-chrome', path => path === 'explicit-chrome'), 'explicit-chrome');
   assert.throws(() => executable('missing-chrome', () => false), /Configured browser executable does not exist/);
+});
+// Edge/Chrome --headless=new keep a hidden top-level window per page that Windows can still list in Alt+Tab after
+// the browser closes; chrome-headless-shell creates none, so a headless start prefers it when installed.
+test('headless start prefers chrome-headless-shell: explicit, then the newest cached build, else none', () => {
+  const cache = join(mkdtempSync(join(tmpdir(), 'hs-')), 'headless-shell');
+  assert.equal(headlessExecutable(undefined, cache), null);
+  assert.equal(headlessExecutable('shell.exe', cache, p => p === 'shell.exe'), 'shell.exe');
+  assert.throws(() => headlessExecutable('missing.exe', cache, () => false), /Configured headless browser executable does not exist/);
+  const exe = process.platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell';
+  mkdirSync(join(cache, 'chrome-headless-shell'), { recursive: true });
+  writeFileSync(join(cache, 'chrome-headless-shell', '.metadata'), '{}');
+  assert.equal(headlessExecutable(undefined, cache), null);
+  for (const v of ['9.0.1', '157.0.8103.78', '24.0.5']) {
+    const dir = join(cache, 'chrome-headless-shell', `os-${v}`, 'chrome-headless-shell-os');
+    mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, exe), '');
+  }
+  assert.equal(headlessExecutable(undefined, cache), join(cache, 'chrome-headless-shell', 'os-157.0.8103.78', 'chrome-headless-shell-os', exe));
 });
 test('shutdown reset is not closure; only independent connection refusal confirms it', async () => {
   let probes = 0;
