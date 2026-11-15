@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -63,10 +63,28 @@ export function readActivePort(file, read = readFileSync) {
   const [port, path] = text.trim().split(/\r?\n/);
   return /^\d+$/.test(port ?? '') && path?.startsWith('/devtools/browser/') ? { port, path } : null;
 }
+// Edge/Chrome --headless=new keep a hidden top-level window per page, which Windows can still list in Alt+Tab
+// after the browser closes (only an Explorer restart clears them). chrome-headless-shell creates no such window,
+// so a headless start prefers it: PI_BROWSER_HARNESS_HEADLESS_EXECUTABLE, else the newest build installed by
+// `npx @puppeteer/browsers install chrome-headless-shell@stable --path ~/.cache/headless-shell`, else none.
+export function headlessExecutable(selected = process.env.PI_BROWSER_HARNESS_HEADLESS_EXECUTABLE, cache = join(homedir(), '.cache', 'headless-shell'), available = existsSync) {
+  if (selected) {
+    if (!available(selected)) throw new Error('Configured headless browser executable does not exist: ' + selected);
+    return selected;
+  }
+  const root = join(cache, 'chrome-headless-shell');
+  const exe = process.platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell';
+  const dirs = path => readdirSync(path, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name);
+  const builds = existsSync(root) ? dirs(root).flatMap(build => dirs(join(root, build))
+    .map(dir => join(root, build, dir, exe)).filter(p => existsSync(p))
+    .map(path => ({ path, version: (build.match(/\d+(?:\.\d+)*/)?.[0] ?? '0').split('.').map(Number) }))) : [];
+  builds.sort((a, b) => { for (let i = 0; i < 4; i++) if ((a.version[i] ?? 0) !== (b.version[i] ?? 0)) return (b.version[i] ?? 0) - (a.version[i] ?? 0); return 0; });
+  return builds[0]?.path ?? null;
+}
 // Always request a new ephemeral port from Chromium and read its profile-specific identity.
 // It cannot collide with, attach to, or replace an existing personal CDP port.
 function launchBrowser(profile, logFd, headless) {
-  return spawn(executable(), ['--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
+  return spawn((headless && headlessExecutable()) || executable(), ['--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
     '--user-data-dir=' + profile, '--no-first-run', '--no-default-browser-check',
     ...(headless ? ['--headless=new'] : []), 'about:blank'], { detached: true, stdio: ['ignore', 'ignore', logFd], windowsHide: headless });
 }
