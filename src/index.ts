@@ -11,14 +11,14 @@ import { activity, closeIdle, record, touch } from '../scripts/browser.mjs';
 export interface IdleOptions { minutes?: number; everyMs?: number; record?: string; activity?: string }
 export interface ExtensionOptions { bridge?: BridgeOptions; idle?: IdleOptions }
 
-/** Same directory regardless of case (Windows), separators, trailing slash or links. */
+// external: Windows paths are case-insensitive and can refer to the same directory through links.
 function canonical(path: string): string {
   let real: string;
   try { real = realpathSync.native(path); } catch { real = resolve(path); }
   return process.platform === 'win32' ? real.toLowerCase() : real;
 }
 
-/** PI_BROWSER_HARNESS_ONLY_ROOT lets a benchmark load two copies of this package and keep one registered. */
+
 function selected(only = process.env.PI_BROWSER_HARNESS_ONLY_ROOT): boolean {
   return only === undefined || only === '' || canonical(only) === canonical(root);
 }
@@ -28,7 +28,7 @@ function idleMinutes(value = process.env.PI_BROWSER_HARNESS_IDLE_MINUTES) {
   return Number.isFinite(minutes) && minutes >= 0 ? minutes : 30;
 }
 
-// The options seam lets lifecycle tests inject a fake worker; Pi loads the default export with none.
+
 export function browserHarnessExtension(options: ExtensionOptions = {}) {
   return (pi: ExtensionAPI) => extension(pi, options);
 }
@@ -36,21 +36,23 @@ export function browserHarnessExtension(options: ExtensionOptions = {}) {
 function extension(pi: ExtensionAPI, options: ExtensionOptions) {
   if (!selected()) return;
   const sessions = new Map<string, Controller>();
-  // One persistent bridge per Pi session: its Python worker serves that session's actions and is ended on shutdown.
+
   const bridges = new Map<string, BridgeSession>();
   const idle = { minutes: options.idle?.minutes ?? idleMinutes(), file: options.idle?.record ?? record, used: options.idle?.activity ?? activity };
-  // A browser left open after the work ended costs ~13 processes and their memory until someone notices it.
+  // external: An idle browser retains multiple processes until it is closed.
   let checking = false;
   const check = async () => {
     if (checking) return;
     checking = true;
     try { await closeIdle(idle.file, idle.used, idle.minutes * 60_000); }
-    catch { /* an unclassified probe failure is not proof the browser is idle; try again on the next tick */ }
+    catch {
+      // external: An unclassified probe failure does not prove that the browser is idle.
+    }
     finally { checking = false; }
   };
   const timer = idle.minutes > 0 ? setInterval(check, options.idle?.everyMs ?? 60_000) : undefined;
   timer?.unref();
-  const used = () => { try { touch(idle.used); } catch { /* the idle clock is advisory */ } };
+  const used = () => { try { touch(idle.used); } catch {  } };
   pi.on('session_shutdown', async () => {
     clearInterval(timer);
     await Promise.all([...bridges.values()].map(bridge => bridge.close()));

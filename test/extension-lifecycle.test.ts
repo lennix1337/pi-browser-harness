@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { browserHarnessExtension } from '../src/index.ts';
 
-// Real native tool entry point and real BridgeSession; only the Python worker is replaced by the protocol double.
+
 const fixture = fileURLToPath(new URL('./fixtures/fake-bridge-worker.mjs', import.meta.url));
 
 function alive(pid: number): boolean {

@@ -9,11 +9,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// The launcher as a command: what it prints, where, and that the process ends. No browser.
+
 const cli = fileURLToPath(new URL('../scripts/browser.mjs', import.meta.url));
 const env = home => ({ ...process.env, PI_BROWSER_HARNESS_HOME: home });
 
-/** A CDP endpoint that answers /json/version, accepts the browser WebSocket and then never answers nor closes it. */
+
 async function silentBrowser() {
   const sockets = new Set();
   const seen = { frames: 0 };
@@ -26,7 +26,7 @@ async function silentBrowser() {
     const accept = createHash('sha1').update(request.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
     socket.on('data', () => { seen.frames++; });
-    socket.on('error', () => { /* the command went away while the socket was held open: that is the point */ });
+    socket.on('error', () => {  });
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
@@ -42,8 +42,8 @@ test('stop answers and ends even when the browser never drops its connection', a
   let out = '', err = '', capped = false;
   command.stdout.on('data', chunk => { out += chunk; });
   command.stderr.on('data', chunk => { err += chunk; });
-  // The answer comes after the 5 s the launcher gives Browser.close. A command still running long after that is held
-  // by the open socket and would never end: the cap ends it so this test fails instead of hanging.
+  // external: An open socket can keep a Node command alive after its answer.
+
   const cap = setTimeout(() => { capped = true; command.kill('SIGKILL'); }, 20_000);
   try {
     const [code] = await once(command, 'close');

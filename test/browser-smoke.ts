@@ -49,7 +49,7 @@ async function call(who: string, args: any) {
 }
 function owner(id: string) { return { sessionManager: { getSessionId: () => id } } as any; }
 const text = (result: { content: any[] }) => (result.content[0] as { text: string }).text;
-/** Run one cell on an owned tab; every successful reply starts with the JSON header. */
+
 async function cell(who: string, tab: string | undefined, code: string, timeout?: number) {
   const reply = await call(who, { action: 'exec', tab, code, ...(timeout ? { timeout } : {}) });
   const [header, ...body] = text(reply).split('\n');
@@ -75,7 +75,7 @@ try {
   const removed = await tool.execute('old', { action: 'inspect', tab: mainTab }, undefined, undefined, owner('task-owner'));
   assert.match(text(removed), /inspect -> state/);
 
-  // The cell loop: state -> act by id -> the acting cell prints the new state; the server confirms the write.
+
   const listing = text(await call('task-owner', { action: 'state', tab: mainTab }));
   assert.equal(JSON.parse(listing.split('\n')[0]).url, base + '/form');
   const name = nodeId(listing, 'textbox', 'Name'), save = nodeId(listing, 'button', 'Save');
@@ -87,7 +87,7 @@ try {
   assert.match(clicked.output, /'Saved through browser: Pi browser harness'/);
   assert.equal(writes, 1, 'exactly one server-side write, no replay');
 
-  // The namespace persists per tab across cells, and never leaks to another tab.
+
   await cell('task-owner', mainTab, 'kept = {"n": 41}');
   assert.equal((await cell('task-owner', mainTab, 'kept["n"] + 1')).output.trim(), '42');
   const otherTab = (await call('task-owner', { action: 'open', endpoint })).details.tab;
@@ -96,19 +96,19 @@ try {
   assert.match(text(missing), /NameError/);
   await call('task-owner', { action: 'close', tab: otherTab });
 
-  // Network observation is scoped to the owned tab.
+
   const seen = await cell('task-owner', mainTab, 'print([(r["method"], r["url"], r["status"]) for r in network(method="POST", urlContains="/save", status=200)])');
   assert.ok(seen.output.includes(`('POST', '${base}/save', 200)`), seen.output + (await cell('task-owner', mainTab, 'print(network())')).output);
   assert.equal((await cell('task-owner', mainTab, 'print(len(network(urlContains="/sentinel")))')).output.trim(), '0', 'network stays isolated to the owned tab');
 
-  // A cell cannot reach beyond the tab: the guard refuses before anything runs.
+
   for (const code of ['import socket', 'cdp("Target.createTarget", url="about:blank")', 'from browser_harness import helpers']) {
     const refused = await tool.execute('guard', { action: 'exec', tab: mainTab, code }, undefined, undefined, owner('task-owner'));
     assert.equal(refused.isError, true, code);
     assert.match(text(refused), /refused/i, code);
   }
 
-  // Dialogs: confirm() is dismissed and reported, in seconds, instead of hanging the cell.
+
   const started = Date.now();
   const dialog = await cell('task-owner', mainTab, `print(js("confirm('sure?')"))`);
   assert.match(dialog.output, /\[dialog confirm\] "sure\?" \(dismissed\)/);
@@ -120,7 +120,7 @@ try {
   const alerted = await cell('task-owner', mainTab, `js("alert('hi')")`);
   assert.match(alerted.output, /\[dialog alert\] "hi" \(accepted\)/);
 
-  // Request editing from inside a cell: edits reach the server; the journal holds no values.
+
   const run = async (who: string, tab: string | undefined, expression: string) => JSON.parse((await cell(who, tab, jsonOf(expression))).output.trim());
   assert.match((await cell('task-owner', mainTab, `print(intercept(${rules()})["active"])`)).output, /True/);
   const duplicate = await tool.execute('duplicate-editor', { action: 'exec', tab: mainTab, code: `intercept(${rules()})` }, undefined, undefined, owner('task-owner'));
@@ -143,7 +143,7 @@ try {
   await cell('task-owner', mainTab, 'intercept_stop()');
   assert.equal((await run('task-owner', mainTab, fetchCapture())).body, 'original', 'stop releases an unexhausted editor');
 
-  // A cell past its deadline kills the REPL: outcome uncertain, variables lost, tab still owned and usable.
+
   const hung = await tool.execute('hang', { action: 'exec', tab: mainTab, code: 'while True:\n    pass', timeout: 1 }, undefined, undefined, owner('task-owner'));
   assert.equal(hung.isError, true);
   assert.equal((hung.details as any).status, 'outcome_uncertain');
@@ -152,7 +152,7 @@ try {
   assert.match(text(lost), /NameError/);
   assert.equal((await cell('task-owner', mainTab, 'js("document.querySelector(\'#result\').innerText")')).output.trim(), "'Saved through browser: Pi browser harness'", 'the tab survived the REPL restart');
 
-  // Exercise graceful EOF and hard worker loss with the same real CDP implementation.
+
   const owned = await crashController.execute({ action: 'open', endpoint, url: base + '/form' });
   assert.equal(owned.isError, false);
   crashTab = owned.value.tab;
@@ -173,7 +173,7 @@ try {
   assert.equal((await crashFetch()).body, 'original', 'worker death releases interception without replay or hung requests');
   assert.match(await crashCell('print(intercept_status()["active"])'), /False/);
   assert.equal(received.length, 9, 'every fixture fetch reaches the server exactly once, never replayed');
-  // A graceful end (EOF) also ends the worker's daemon, and with it the tab's CDP session: named plainly, and the tab can still be closed.
+  // external: Ending the worker daemon also ends its CDP session.
   assert.deepEqual(await crashBridge.close(), { ended: 1, killed: 0 });
   const ended = await crashController.execute({ action: 'exec', tab: crashTab, code: '1' });
   assert.equal(ended.isError, true);

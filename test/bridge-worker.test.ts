@@ -20,7 +20,7 @@ function session(options: { deadlineMs?: number; healthMs?: number } = {}) {
     healthMs: options.healthMs ?? 1000, helloMs: 5000, closeGraceMs: 300, deadlineMs: options.deadlineMs,
   });
 }
-/** Environment switches for the fake worker, restored after the test. */
+
 function withEnv(values: Record<string, string>, body: () => Promise<void>) {
   const saved = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]));
   Object.assign(process.env, values);

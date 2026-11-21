@@ -253,9 +253,9 @@ test('a tab the browser no longer has is released on close instead of staying ow
   assert.deepEqual((await other.execute({})).value.tabs, ['t'], 'an uncertain close keeps the handle');
 });
 
-// 03/11: the isolated browser on :9333 died mid-session. Each later call waited 40 s, came back
-// outcome_uncertain with "next: status", and status still answered ok with the dead tabs, so the agent
-// retried for 20 minutes until a curl of /json/version showed nothing listened there.
+
+
+
 test('a timed-out call says when its browser no longer answers, and status shows it too', async () => {
   const probed: string[] = [];
   let up = false;

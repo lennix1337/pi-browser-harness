@@ -13,12 +13,12 @@ const fields: Record<string, string[]> = {
   state: ['action', 'tab', 'max'], screenshot: ['action', 'tab', 'full', 'maxWidth'], close: ['action', 'tab'],
   read: ['action', 'receipt', 'offset', 'limit'],
 };
-/** Actions of the earlier one-call-per-effect surface. They answer with what replaces them. */
+
 const removed = new Set(['navigate', 'inspect', 'click', 'type', 'evaluate', 'network', 'intercept_start', 'intercept_status', 'intercept_stop']);
 const MIGRATION = 'inspect -> state; click/type/evaluate/navigate -> exec with click(id)/type(id,text)/js(expr)/goto(url); '
   + 'network -> exec with network(filter); intercept_* -> exec with intercept(rules)/intercept_status()/intercept_stop().';
 export const OUTPUT_VIEW = 12000;
-/** What the host keeps of a running cell's output: enough to show where it was, not to hold a runaway loop in memory. */
+
 const PARTIAL_LIMIT = 200_000;
 const DEFAULT_TIMEOUT = 30, MAX_TIMEOUT = 300, MAX_CODE = 65536;
 
@@ -50,9 +50,9 @@ export function render(value: Record<string, any>): string {
   return JSON.stringify({ status, tab, url }) + (body ? '\n' + body.replace(/\n$/, '') : '') + tail;
 }
 
-/** CDP's answer to `Target.closeTarget` for an id the browser does not have. */
+// external: CDP reports a missing target when a tab has already closed.
 const TAB_GONE = /No target with given id/i;
-/** A killed or lost worker takes every tab's cell namespace with it; a plain error reply from a live worker does not. */
+// external: A lost worker destroys its tab cell namespaces.
 const WORKER_LOST = /Deadline exceeded|Aborted|worker|Bridge|exited/i;
 export class Controller {
   private tabs = new Map<string, { endpoint: string; target: string; session: string }>();
@@ -60,7 +60,7 @@ export class Controller {
   private tail: Promise<void> = Promise.resolve();
   constructor(private send: Transport, private alive: Probe = cdpAlive) {}
 
-  /** Liveness of each browser that owns a tab; absent without tabs, so a bare status stays offline. */
+
   private async browsers() {
     const origins = [...new Set([...this.tabs.values()].map(tab => tab.endpoint))];
     if (!origins.length) return undefined;
@@ -74,7 +74,7 @@ export class Controller {
     while (this.receipts.size > 8) this.receipts.delete(this.receipts.keys().next().value!);
     return receipt;
   }
-  /** At most OUTPUT_VIEW characters of output; a longer one is kept whole behind a receipt and cut in the middle. */
+
   private view(output: string): Record<string, unknown> {
     if (output.length <= OUTPUT_VIEW) return { output };
     const receipt = this.keep(output), half = OUTPUT_VIEW / 2;
@@ -91,7 +91,7 @@ export class Controller {
       next: nextOffset === undefined ? undefined : { tool: 'browser_harness', arguments: { action: 'read', receipt: args.receipt, offset: nextOffset } } };
   }
 
-  /** Requests of one session run one at a time, first come first served; a request aborted while it waits never dispatches. */
+
   private async turn(signal?: AbortSignal): Promise<() => void> {
     const before = this.tail;
     let release!: () => void;
@@ -104,6 +104,7 @@ export class Controller {
     finally { signal.removeEventListener('abort', onAbort); }
     return release;
   }
+
 
   /** `progress` receives the whole output a running cell has printed so far; an exec that dies keeps it as its output. */
   async execute(args: Args, signal?: AbortSignal, progress?: Progress): Promise<Outcome> {
@@ -144,13 +145,13 @@ export class Controller {
       }
       return this.cell(args.tab!, result);
     } catch (error) {
-      // Closing a tab the browser no longer has (closed by hand, crashed) changes nothing there: release the handle,
-      // or it would count against the 16-tab limit and list as owned forever.
+      // external: A tab already closed in Chromium must be released locally to avoid a stale ownership slot.
+
       if (action === 'close' && dispatched && error instanceof Error && TAB_GONE.test(error.message)) {
         this.tabs.delete(args.tab!);
         return { value: { status: 'ok', tab: args.tab, note: 'The browser no longer had this tab; ownership released.' }, isError: false };
       }
-      // A browser that stopped answering explains a timeout better than any retry: its tabs are gone with it.
+      // external: An unreachable browser invalidates its tabs.
       const origin = dispatched ? this.tabs.get(args.tab ?? '')?.endpoint ?? (action === 'open' ? endpoint(args.endpoint) : undefined) : undefined;
       const dead = origin !== undefined && !await this.alive(origin);
       const text = error instanceof Error ? error.message.slice(0, 500) : 'Browser request failed.';
@@ -165,7 +166,7 @@ export class Controller {
     } finally { release?.(); }
   }
 
-  /** A cell's or state's result: its status, the page it ended on and its output, cut to what fits a reply. */
+
   private cell(tab: string, result: any): Outcome {
     if (typeof result?.status !== 'string' || typeof result?.output !== 'string') throw new Error('Bridge returned a malformed cell result; outcome uncertain.');
     const status = result.status;

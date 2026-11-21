@@ -4,25 +4,13 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { bridgeDeadline, python, root, type Request } from './client.ts';
 
-/**
- * Persistent bridge: one Python worker per endpoint, reused by every action of a Pi session, instead of one process
- * per action. The worker speaks JSON lines (`python/bridge.py --serve`): a hello with the endpoint, then requests and
- * pings, each answered with the same `id`. While a cell runs, the worker may send `{id, progress}` lines with what the
- * cell printed; they are handed to the caller and do not settle the request.
- *
- * Safety rules, unchanged from the one-shot bridge:
- * - an action is sent to a worker only after that worker answered a ping, so a dead or unresponsive worker is replaced
- *   before anything is dispatched and nothing is replayed;
- * - a crash, deadline, abort, oversized or non-protocol reply during an action kills that worker and reports the
- *   action as uncertain; the next action starts a fresh worker;
- * - closing a session sends EOF: the worker exits by itself; a worker that ignores EOF is killed after a grace period.
- */
+
 /** `passEnv` names extra variables to hand the worker; tests use it for their protocol double's switches. */
 export type Command = { python: string; args: string[]; passEnv?: string[] };
 export type Options = { command?: Command; healthMs?: number; helloMs?: number; closeGraceMs?: number; deadlineMs?: number };
 
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
-/** What the worker needs to find its runtime and the browser's data directory. Everything else in the Pi process (tokens, keys) stays out. */
+
 const ENV_ALLOWED = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
   'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'LANG', 'LC_ALL', 'TZ', 'PI_BROWSER_HARNESS_HOME']);
 export function workerEnv(source: NodeJS.ProcessEnv = process.env, extra: string[] = []): NodeJS.ProcessEnv {
@@ -50,20 +38,20 @@ class Worker {
 
   constructor(readonly endpoint: string, private readonly child: ChildProcessWithoutNullStreams) {
     child.stdout.on('data', (chunk: Buffer) => this.onData(chunk));
-    // Python diagnostics can contain page content: they are drained, never kept or surfaced.
+    // external: Python diagnostics can contain page content and must not be surfaced.
     child.stderr.resume();
     child.stdin.on('error', () => this.kill(`Bridge input delivery failed; ${EXTERNAL}`));
     child.once('error', error => this.kill(`Bridge worker failed: ${error.message}; ${UNCERTAIN}`));
-    // 'close' (not 'exit') fires after stdout is drained, so a reply written just before exit is still read.
+    // external: Node close fires after stdout drains, unlike exit.
     child.once('close', code => {
       this.exitCode = code;
       if (this.state === 'running') this.state = 'exited';
       this.settle(new Error(`Bridge worker exited during the request; ${UNCERTAIN}`));
       this.resolveClosed();
     });
-    // An idle worker must not keep the Pi process alive (EOF ends it). The stdio pipes are sockets that stay ref'd
-    // on their own, so each one is unref'd too; the stream types do not declare unref, hence the cast. A request in
-    // flight keeps its own deadline timer ref'd.
+    // external: Node stdio pipes can keep the event loop alive after the idle worker is unrefed.
+
+
     child.unref();
     for (const stream of [child.stdin, child.stdout, child.stderr]) (stream as unknown as { unref?: () => void }).unref?.();
   }
@@ -85,7 +73,7 @@ class Worker {
     return worker;
   }
 
-  /** One request in flight at a time. Resolves with the reply's `result`; rejects with the bridge's error. */
+
   request(payload: Record<string, unknown>, deadlineMs: number, signal?: AbortSignal, onProgress?: (text: string) => void): Promise<any> {
     if (signal?.aborted) return Promise.reject(new Error('Aborted before dispatch'));
     if (!this.alive) return Promise.reject(new Error(`Bridge worker is not running; ${UNCERTAIN}`));
@@ -104,7 +92,7 @@ class Worker {
     });
   }
 
-  /** Ends the worker with EOF. Resolves 'ended' when it exits on its own with status 0, 'killed' otherwise. */
+
   async end(graceMs: number): Promise<'ended' | 'killed'> {
     if (!this.alive) return 'killed';
     this.child.stdin.end();
@@ -114,13 +102,13 @@ class Worker {
     return this.state === 'exited' && this.exitCode === 0 ? 'ended' : 'killed';
   }
 
-  /** Stops the worker. Whatever was in flight settles with the reason as its error. */
+
   kill(reason: string) {
     if (this.state !== 'running') return;
     this.state = 'killed';
     this.child.stdin.destroy();
     this.child.kill();
-    // A process that never spawned emits no 'close': nothing would ever resolve the close wait.
+    // external: A process that never spawned emits no close event.
     if (this.child.pid === undefined) this.resolveClosed();
     this.settle(new Error(reason));
   }
@@ -173,6 +161,7 @@ export class BridgeSession {
   private readonly deadlineMs?: number;
   private workers = new Map<string, Worker>();
   private queue: Promise<unknown> = Promise.resolve();
+  // external: Upstream daemon event buffers are emptied by reads.
   /** Upstream daemons keep one event buffer each, and reading it empties it. Sessions sharing a daemon would steal each other's network and dialog events, so each session names its own. */
   readonly daemon = 'pi-' + randomBytes(4).toString('hex');
 
@@ -188,12 +177,14 @@ export class BridgeSession {
     return [...this.workers.values()].filter(worker => worker.alive).length;
   }
 
+
   /** Actions of one session run one at a time, in order. */
   send(request: Request, signal?: AbortSignal, onProgress?: (text: string) => void): Promise<any> {
     const run = this.queue.then(() => this.dispatch(request, signal, onProgress));
     this.queue = run.catch(() => undefined);
     return run;
   }
+
 
   /** Ends every worker of this session (EOF). Tabs stay open: only the bridge is released. Later actions start fresh workers. */
   async close(): Promise<{ ended: number; killed: number }> {
@@ -213,7 +204,7 @@ export class BridgeSession {
   private async workerFor(endpoint: string): Promise<Worker> {
     const current = this.workers.get(endpoint);
     if (current?.alive && await this.healthy(current)) return current;
-    // Nothing of the next action has been sent yet, so replacing a dead or unresponsive worker replays nothing.
+    // external: Replacing a worker before sending the next action cannot replay that action.
     current?.kill('Bridge worker unresponsive before dispatch; restarted.');
     const fresh = await Worker.start(this.command, endpoint, this.helloMs, this.daemon);
     this.workers.set(endpoint, fresh);
