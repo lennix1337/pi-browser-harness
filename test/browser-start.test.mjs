@@ -8,11 +8,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { start } from '../scripts/browser.mjs';
 
-// What `start` leaves behind, with real processes standing in for the browser. Kept apart from browser.test.mjs
-// because these tests wait on processes, and the mutation harness runs a whole file per mutant.
+
+
 const tree = fileURLToPath(new URL('./fixtures/process-tree.mjs', import.meta.url));
 const running = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } };
-/** Starts the fixture tree the way the launcher starts a browser (detached); resolves once parent and child run. */
+
 async function launchTree(dir) {
   const file = join(dir, 'pids');
   const root = spawn(process.execPath, [tree, file], { detached: true, stdio: 'ignore', windowsHide: true });
@@ -24,11 +24,11 @@ async function launchTree(dir) {
   root.kill('SIGKILL');
   throw new Error('fixture tree did not start');
 }
-/** Ends whatever a test left of its own fixture processes, and removes its folder; runs even when an assertion failed. */
+
 function reap(dir, ...pids) {
   for (const pid of pids.filter(pid => pid !== undefined)) {
     try { process.kill(pid, 'SIGKILL'); }
-    catch (error) { if (error.code !== 'ESRCH') throw error; } // ESRCH: the test already ended it
+    catch (error) { if (error.code !== 'ESRCH') throw error; }
   }
   rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
 }
@@ -68,7 +68,7 @@ test('the fixture child outlives a parent-only kill, so only ending the whole tr
     process.kill(launched.parent, 'SIGKILL');
     for (let waited = 0; running(launched.parent) && waited < 5000; waited += 25) await delay(25);
     assert.equal(running(launched.parent), false);
-    await delay(500); // room for a shared job or console to take the child down with its parent, if one did
+    await delay(500);
     assert.equal(running(launched.child), true, 'only the parent was killed');
   } finally { reap(dir, launched?.parent, launched?.child); }
 });
@@ -76,8 +76,8 @@ test('a failed start whose browser cannot be confirmed closed says so and names 
   const dir = mkdtempSync(join(tmpdir(), 'browser-start-'));
   let launched;
   try {
-    // A kill that reports success and ends nothing: what is still running decides the message, not the report.
-    // Nothing is dying here, so the wait for it is cut short; the real kill above keeps the production window.
+    // external: A successful kill call alone does not prove that the process stopped.
+
     const stuck = { dir, readyMs: 50, confirmMs: 100, launch: async () => (launched = await launchTree(dir)).root, kill: () => true };
     const failure = await start(true, stuck).catch(error => error);
     assert.ok(failure instanceof Error);

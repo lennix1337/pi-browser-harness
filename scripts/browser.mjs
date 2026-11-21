@@ -54,8 +54,8 @@ export async function recordedBrowser(file, probe = version) {
     return { saved, gone: true };
   }
 }
-// Chromium keeps DevToolsActivePort open while writing it: on Windows a read can hit EBUSY,
-// or see the port line before the path line. Both mean "not ready yet", not a failed launch.
+// external: Windows may return EBUSY or partial contents while Chromium writes DevToolsActivePort.
+
 export function readActivePort(file, read = readFileSync) {
   let text;
   try { text = read(file, 'utf8'); }
@@ -63,10 +63,10 @@ export function readActivePort(file, read = readFileSync) {
   const [port, path] = text.trim().split(/\r?\n/);
   return /^\d+$/.test(port ?? '') && path?.startsWith('/devtools/browser/') ? { port, path } : null;
 }
-// Edge/Chrome --headless=new keep a hidden top-level window per page, which Windows can still list in Alt+Tab
-// after the browser closes (only an Explorer restart clears them). chrome-headless-shell creates no such window,
-// so a headless start prefers it: PI_BROWSER_HARNESS_HEADLESS_EXECUTABLE, else the newest build installed by
-// `npx @puppeteer/browsers install chrome-headless-shell@stable --path ~/.cache/headless-shell`, else none.
+// external: Windows can retain Chrome headless windows after exit; chrome-headless-shell avoids them.
+
+
+
 export function headlessExecutable(selected = process.env.PI_BROWSER_HARNESS_HEADLESS_EXECUTABLE, cache = join(homedir(), '.cache', 'headless-shell'), available = existsSync) {
   if (selected) {
     if (!available(selected)) throw new Error('Configured headless browser executable does not exist: ' + selected);
@@ -81,29 +81,23 @@ export function headlessExecutable(selected = process.env.PI_BROWSER_HARNESS_HEA
   builds.sort((a, b) => { for (let i = 0; i < 4; i++) if ((a.version[i] ?? 0) !== (b.version[i] ?? 0)) return (b.version[i] ?? 0) - (a.version[i] ?? 0); return 0; });
   return builds[0]?.path ?? null;
 }
-// Always request a new ephemeral port from Chromium and read its profile-specific identity.
-// It cannot collide with, attach to, or replace an existing personal CDP port.
+// external: A fresh Chromium ephemeral port prevents attachment to an existing personal CDP endpoint.
+
 function launchBrowser(profile, logFd, headless) {
   return spawn((headless && headlessExecutable()) || executable(), ['--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
     '--user-data-dir=' + profile, '--no-first-run', '--no-default-browser-check',
     ...(headless ? ['--headless=new'] : []), 'about:blank'], { detached: true, stdio: ['ignore', 'ignore', logFd], windowsHide: headless });
 }
-/** Whether `pid` (a process group when negative, POSIX only) still has a running process. */
+
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } };
-/**
- * Ends one launched process and what descends from it: that pid only, never an image name or a scan of other
- * processes. Returns whether the platform's kill reported success.
- */
+
 function killTree(pid) {
-  // A parent-only kill leaves the browser's own child processes running; /T takes the tree.
+  // external: Windows taskkill /T includes the browser child processes.
   if (process.platform === 'win32') return spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).status === 0;
-  // `detached` made the launched process a group leader, so its group is the tree. ESRCH: nothing of it is left.
+  // external: A detached POSIX browser is a process group leader.
   try { process.kill(-pid, 'SIGKILL'); return true; } catch (error) { return error.code === 'ESRCH'; }
 }
-/**
- * What became of the process a failed start had launched: 'closed' (ended here, nothing of it left running), 'exited'
- * (it never ran or had ended by itself) or 'unconfirmed'. On Windows only taskkill's own report covers the descendants.
- */
+
 async function endLaunched(child, kill, confirmMs) {
   if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return 'exited';
   const reported = kill(child.pid);
@@ -122,7 +116,7 @@ const AFTER_FAILED_START = {
  * `confirmMs` bounds the wait for that tree to be gone.
  */
 export async function start(headless, io = {}) {
-  // A cold first launch (new profile, Windows CI runner) has taken over 15 s to write DevToolsActivePort.
+  // external: A cold Chromium launch can take over 15 seconds to write DevToolsActivePort.
   const { dir = home, launch = launchBrowser, readyMs = 45000, kill = killTree, confirmMs = 2000 } = io;
   const file = join(dir, 'browser.json');
   const { saved, current, gone } = await recordedBrowser(file);
@@ -161,7 +155,7 @@ export async function start(headless, io = {}) {
     }
     throw new Error('Browser readiness timed out; own browser log: ' + log);
   } catch (error) {
-    // A browser without a record is out of reach of stop and of the idle close: only this call can still end it.
+    // external: Without a stored record, later stop and idle cleanup cannot find the launched browser.
     const outcome = await endLaunched(child, kill, confirmMs);
     throw new Error(`${error.message}; ${AFTER_FAILED_START[outcome](child.pid)}`, { cause: error });
   }
@@ -177,8 +171,8 @@ export async function closeConnection(url, Constructor = WebSocket) {
       else reject(new Error('CDP failed before close dispatch; browser was not asked to close.'));
     };
     ws.addEventListener('open', () => { ws.send(JSON.stringify({ id: 1, method: 'Browser.close' })); sent = true; });
-    // Chromium may close its transport without a clean WS handshake when Browser.close succeeds.
-    // The caller must independently observe that the same endpoint stopped responding.
+    // external: Chromium may close the transport without a clean WebSocket handshake after Browser.close.
+
     ws.addEventListener('error', ended);
     ws.addEventListener('close', ended);
   });
@@ -189,7 +183,7 @@ export async function waitForClosed(endpoint, probe = version, wait = delay) {
     try { await probe(endpoint); }
     catch (error) {
       if (error.cause?.code === 'ECONNREFUSED') return;
-      // ECONNRESET/timeouts during shutdown are not proof of closure: observe until refusal.
+      // external: ECONNRESET or timeout during shutdown does not prove the browser has closed.
       lastError = error;
     }
     await wait(100);
@@ -202,7 +196,7 @@ async function stop() {
   if (gone) return { status: 'not_running', profileRetained: saved.profile };
   if (current.webSocketDebuggerUrl !== saved.ws) throw new Error('Browser identity mismatch; refused to close.');
   await closeConnection(saved.ws);
-  // A WebSocket close alone does not prove the endpoint stopped serving.
+  // external: A closed WebSocket does not prove the CDP endpoint stopped serving.
   await waitForClosed(saved.endpoint);
   unlinkSync(record);
   return { status: 'closed', profileRetained: saved.profile };
@@ -227,7 +221,7 @@ export async function closeIdle(file = record, used = activity, idleMs, io = {})
   if (idle < idleMs) return { status: 'in_use', idleMs: idle };
   if (current.webSocketDebuggerUrl !== saved.ws) return { status: 'refused', message: 'Browser identity mismatch; not closed.' };
   await close(saved.ws);
-  await closed(saved.endpoint); // same proof as stop: the endpoint refuses connections
+  await closed(saved.endpoint);
   unlinkSync(file);
   return { status: 'closed_idle', idleMinutes: Math.round(idle / 60000), profileRetained: saved.profile };
 }
@@ -240,7 +234,7 @@ try {
   answer = action === 'start' ? await start(flag === '--headless') : action === 'stop' ? await stop()
     : { status: existsSync(record) ? 'recorded' : 'not_started', ...(existsSync(record) ? JSON.parse(readFileSync(record, 'utf8')) : {}) };
 } catch (error) { stream = process.stderr; code = 1; answer = { status: 'error', message: error.message }; }
-// The command is over once its answer is written. Leaving the exit to an empty event loop hands it to whatever is
-// still open: a browser that got Browser.close and never dropped its WebSocket kept `stop` running after the answer.
+// external: An open WebSocket can keep Node alive after a command has answered.
+
 stream.write(JSON.stringify(answer) + '\n', () => process.exit(code));
 }

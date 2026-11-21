@@ -30,7 +30,7 @@ export async function cdpAlive(origin: string, timeoutMs = 2000): Promise<boolea
   catch { return false; }
 }
 
-/** Short git HEAD of this package copy, or undefined when it is not a checkout or git is slow/absent. */
+
 function head(): string | undefined {
   if (!existsSync(join(root, '.git'))) return undefined;
   try { return execFileSync('git', ['-C', root, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8', timeout: 2000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || undefined; }

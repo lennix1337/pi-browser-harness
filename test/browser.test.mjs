@@ -18,8 +18,8 @@ test('explicit browser choice is respected; a missing executable never silently 
   assert.equal(executable('explicit-chrome', path => path === 'explicit-chrome'), 'explicit-chrome');
   assert.throws(() => executable('missing-chrome', () => false), /Configured browser executable does not exist/);
 });
-// Edge/Chrome --headless=new keep a hidden top-level window per page that Windows can still list in Alt+Tab after
-// the browser closes; chrome-headless-shell creates none, so a headless start prefers it when installed.
+// external: Windows can retain hidden Chrome headless windows after exit; chrome-headless-shell avoids them.
+
 test('headless start prefers chrome-headless-shell: explicit, then the newest cached build, else none', () => {
   const cache = join(mkdtempSync(join(tmpdir(), 'hs-')), 'headless-shell');
   assert.equal(headlessExecutable(undefined, cache), null);

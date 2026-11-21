@@ -1,11 +1,11 @@
-// Per-action latency of the browser bridge through the real Controller (the same path the Pi tool uses).
-// Each iteration opens an owned tab on a local page, reads its state, clicks by element id and reads the click count
-// in cells, then closes it. The click effect is checked through js(), so a timing only counts when the action really ran.
-//
-//   node --import tsx scripts/bench-bridge.ts --endpoint http://127.0.0.1:PORT [--n 40] [--warmup 3] [--out file.json]
-//
-// The endpoint must be a browser the caller launched on purpose (e.g. `npm run browser -- start --headless` with its own
-// PI_BROWSER_HARNESS_HOME). The script never picks an endpoint itself and never touches a personal browser.
+
+
+
+
+
+
+
+
 import { createServer } from 'node:http';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -27,7 +27,7 @@ function parse(argv: string[]) {
   return { endpoint, n, warmup, settleMs, out: option('--out') };
 }
 
-/** Nearest-rank percentile of a sorted sample. */
+
 function percentile(sorted: number[], p: number) {
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1))];
 }
@@ -59,7 +59,7 @@ try {
       return result.value as Record<string, any>;
     };
     const { tab } = await timed('open', { action: 'open', endpoint: options.endpoint, url });
-    // Unmeasured: lets the page finish loading so the next action does not measure page readiness.
+    // external: Waiting for page readiness keeps load time out of the next measurement.
     if (options.settleMs) await new Promise(done => setTimeout(done, options.settleMs));
     const state = await timed('state', { action: 'state', tab });
     const button = /\[(\d+)\] button "Go"/.exec(String(state.output));
