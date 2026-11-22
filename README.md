@@ -30,7 +30,7 @@ O navegador isolado fecha sozinho depois de 30 minutos sem nenhuma ação de pá
 
 ## Padrão de uso
 
-Leia [a skill](skills/pi-browser-harness/SKILL.md) para o fluxo e regras DentAI. Use **Code Mode** para agrupar I/O independente ou combinar aquisição e cálculo já conhecido; use **REPL** para cálculo puro com estado entre etapas dependentes; use **Browser Harness** quando precisa interagir com o navegador ou renderização JS. Pesquisa/leitura pública simples continua nas ferramentas web.
+Leia [a skill](skills/pi-browser-harness/SKILL.md) para o fluxo e as regras. Use **Code Mode** para agrupar I/O independente ou combinar aquisição e cálculo já conhecido; use **REPL** para cálculo puro com estado entre etapas dependentes; use **Browser Harness** quando precisa interagir com o navegador ou renderização JS. Pesquisa/leitura pública simples continua nas ferramentas web.
 
 A primeira operação cria aba própria em segundo plano e retorna seu ID. As operações seguintes usam ID + sessão CDP explícita, nunca a aba ativa. A aba nasce em segundo plano, mas com emulação de foco: sem isso o Chromium roda timers encadeados a cerca de um por segundo (medido: 12 `setTimeout` de 10 ms levavam ~11 s; com a emulação, ~0,2 s). Toda resposta começa com uma linha JSON `{"status","tab","url"}`; `status` é `ok`, `error` (nada foi despachado) ou `outcome_uncertain` (um efeito pode ter ocorrido: leia `state`, não repita). A saída passa de 12.000 caracteres? Fica inteira atrás de um recibo (`read`, 8 resultados, até 1 MiB cada).
 
@@ -65,7 +65,7 @@ intercept_stop()
 ## Limites e segurança
 
 - Somente endpoints CDP HTTP de loopback explícitos; sem autodescoberta, inicialização de perfil pessoal ou fallback cloud. O Python verifica também a origem WebSocket anunciada e recusa redirects.
-- Proteção contra engano, não sandbox: `cdp()` sempre usa a sessão da aba própria; `Target.*` e `Browser.*` são recusados (aba nova só por `open`); células que importam transporte ou processos são recusadas antes de rodar; o worker recebe só um ambiente permitido (sem tokens). Exec também vale em navegadores aprovados que não são o isolado (por exemplo o perfil `dentai` do Brave), sempre só nas abas da própria ferramenta.
+- Proteção contra engano, não sandbox: `cdp()` sempre usa a sessão da aba própria; `Target.*` e `Browser.*` são recusados (aba nova só por `open`); células que importam transporte ou processos são recusadas antes de rodar; o worker recebe só um ambiente permitido (sem tokens). Exec também vale em navegadores aprovados que não são o isolado (por exemplo um perfil dedicado do Brave ou Chrome), sempre só nas abas da própria ferramenta.
 - Abas de outra sessão, inclusive abas pessoais vazias, não podem ser adotadas ou fechadas. O upstream `new_tab` pode reaproveitar uma aba vazia; esta integração cria um target novo diretamente e registra sua identidade antes de navegar.
 - Sem gravações contínuas, telemetria, marcadores de título, importação de cookies, login ou API paga. Capturas explícitas continuam disponíveis.
 - O processo upstream mantém uma aba branca de infraestrutura e conexão por endpoint. O estado/recibos de cada sessão Pi são separados. Reload perde os handles: conclua ou registre trabalho aberto antes. Não há readoção automática.
