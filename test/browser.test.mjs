@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { existsSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { closeConnection, waitForVersion, waitForClosed, executable, headlessExecutable, recordedBrowser, closeIdle, touch, readActivePort } from '../scripts/browser.mjs';
+import { closeConnection, waitForVersion, waitForClosed, executable, playwrightChromium, headlessExecutable, recordedBrowser, closeIdle, touch, readActivePort } from '../scripts/browser.mjs';
 
 test('a locked or half-written DevToolsActivePort means not ready yet; other read errors still fail', () => {
   const failing = code => () => { throw Object.assign(new Error(code), { code }); };
@@ -121,4 +121,12 @@ test('a browser started but never used counts its idle time from the launch reco
   writeFileSync(file, JSON.stringify({ endpoint: 'http://127.0.0.1:1', ws: 'ws://x/own', profile: 'p' }));
   const io = { now: Date.now(), probe: async () => ({ webSocketDebuggerUrl: 'ws://x/own' }), close: async () => assert.fail('fresh launch must stay'), closed: async () => {} };
   assert.equal((await closeIdle(file, join(dir, 'absent'), 30 * 60_000, io)).status, 'in_use');
+});
+
+test('a Playwright chromium build is the last fallback, newest build first', () => {
+  const builds = playwrightChromium('/pw', () => ['chromium-1194', 'chromium-1255', 'ffmpeg-1011']);
+  assert.deepEqual(builds.slice(0, 2), [join('/pw', 'chromium-1255', 'chrome-linux-arm64', 'chrome'), join('/pw', 'chromium-1255', 'chrome-linux', 'chrome')]);
+  const oldBuild = join('/pw', 'chromium-1194', 'chrome-linux', 'chrome');
+  assert.equal(executable(undefined, path => path === oldBuild, builds), oldBuild);
+  assert.deepEqual(playwrightChromium('/none', () => { throw new Error('ENOENT'); }), []);
 });

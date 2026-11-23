@@ -15,7 +15,14 @@ export async function version(endpoint) {
   if (!res.ok) throw new Error('CDP version HTTP ' + res.status);
   return res.json();
 }
-export function executable(selected = process.env.PI_BROWSER_HARNESS_EXECUTABLE, available = existsSync) {
+/** Chromium builds Playwright downloaded (`npx playwright install chromium`), newest first. */
+export function playwrightChromium(root = join(homedir(), '.cache', 'ms-playwright'), list = readdirSync) {
+  let builds;
+  try { builds = list(root).filter(name => /^chromium-\d+$/.test(name)); } catch { return []; }
+  builds.sort((a, b) => Number(b.slice(9)) - Number(a.slice(9)));
+  return builds.flatMap(build => ['chrome-linux-arm64', 'chrome-linux'].map(dir => join(root, build, dir, 'chrome')));
+}
+export function executable(selected = process.env.PI_BROWSER_HARNESS_EXECUTABLE, available = existsSync, extra = playwrightChromium()) {
   if (selected) {
     if (!available(selected)) throw new Error('Configured browser executable does not exist: ' + selected);
     return selected;
@@ -23,7 +30,7 @@ export function executable(selected = process.env.PI_BROWSER_HARNESS_EXECUTABLE,
   const candidates = [
     process.platform === 'win32' ? 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe' : undefined,
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
+    '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser', ...extra];
   const found = candidates.find(p => p && available(p));
   if (!found) throw new Error('Set PI_BROWSER_HARNESS_EXECUTABLE to an installed Edge/Chrome executable.');
   return found;
