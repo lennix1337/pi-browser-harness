@@ -125,7 +125,8 @@ test('a browser started but never used counts its idle time from the launch reco
 
 test('a Playwright chromium build is the last fallback, newest build first', () => {
   const builds = playwrightChromium('/pw', () => ['chromium-1194', 'chromium-1255', 'ffmpeg-1011']);
-  assert.deepEqual(builds.slice(0, 2), ['/pw/chromium-1255/chrome-linux-arm64/chrome', '/pw/chromium-1255/chrome-linux/chrome']);
-  assert.equal(executable(undefined, path => path === '/pw/chromium-1194/chrome-linux/chrome', builds), '/pw/chromium-1194/chrome-linux/chrome');
+  assert.deepEqual(builds.slice(0, 2), [join('/pw', 'chromium-1255', 'chrome-linux-arm64', 'chrome'), join('/pw', 'chromium-1255', 'chrome-linux', 'chrome')]);
+  const oldBuild = join('/pw', 'chromium-1194', 'chrome-linux', 'chrome');
+  assert.equal(executable(undefined, path => path === oldBuild, builds), oldBuild);
   assert.deepEqual(playwrightChromium('/none', () => { throw new Error('ENOENT'); }), []);
 });
