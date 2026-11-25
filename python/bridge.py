@@ -164,6 +164,7 @@ class Worker:
 
     def open(self):
         from browser_harness.helpers import cdp
+        from repl import WEBMCP_SHIM_JS
         target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
         try:
             session = cdp("Target.attachToTarget", targetId=target, flatten=True)["sessionId"]
@@ -172,6 +173,7 @@ class Worker:
             # A hidden tab runs chained timers about once a second; telling the page it has focus keeps it a background
             # tab (never brought to the front) whose timers, waits and visibility behave like a foreground one.
             cdp("Emulation.setFocusEmulationEnabled", session_id=session, enabled=True)
+            cdp("Page.addScriptToEvaluateOnNewDocument", session_id=session, source=WEBMCP_SHIM_JS)
         except Exception:
             try:
                 cdp("Target.closeTarget", targetId=target)
