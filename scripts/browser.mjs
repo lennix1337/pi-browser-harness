@@ -117,12 +117,18 @@ const AFTER_FAILED_START = {
   exited: pid => pid === undefined ? 'no browser process was started.' : `the browser process this start opened (pid ${pid}) had already exited.`,
   unconfirmed: pid => `the browser this start opened (pid ${pid}) could not be confirmed closed; inspect pid ${pid} before starting again.`,
 };
+/** A Linux host with no X11 or Wayland display (a server, a VM over SSH) can only run a headless browser. */
+export function noDisplay(platform = process.platform, env = process.env) {
+  return platform === 'linux' && !env.DISPLAY && !env.WAYLAND_DISPLAY;
+}
+
 /**
  * `io` is the test seam: `dir` holds the record and the profile, `launch` starts the process (it may be async),
  * `readyMs` bounds the wait for its debugging port, `kill` ends the launched tree when that wait fails and
  * `confirmMs` bounds the wait for that tree to be gone.
  */
 export async function start(headless, io = {}) {
+  headless ||= noDisplay();
   // external: A cold Chromium launch can take over 15 seconds to write DevToolsActivePort.
   const { dir = home, launch = launchBrowser, readyMs = 45000, kill = killTree, confirmMs = 2000 } = io;
   const file = join(dir, 'browser.json');
