@@ -127,6 +127,124 @@ KEYS = {"Enter": (13, "\r"), "Tab": (9, None), "Escape": (27, None), "Backspace"
         "ArrowUp": (38, None), "ArrowDown": (40, None), "ArrowLeft": (37, None), "ArrowRight": (39, None),
         "Home": (36, None), "End": (35, None), "PageUp": (33, None), "PageDown": (34, None), "Space": (32, " ")}
 
+# Tiny W3C WebMCP shim installed at document start only when navigator.modelContext is absent; never overrides native.
+WEBMCP_SHIM_JS = r"""(() => {
+  if (typeof navigator === "undefined" || navigator.modelContext) return;
+  const KEY = Symbol.for("__pi_webmcp__");
+  const tools = new Map();
+  const add = (tool) => {
+    if (!tool || typeof tool !== "object") throw new TypeError("WebMCP tool must be an object");
+    const name = tool.name;
+    if (typeof name !== "string" || !name) throw new TypeError("WebMCP tool requires a non-empty string name");
+    if (typeof tool.execute !== "function") throw new TypeError(`WebMCP tool "${name}" requires an execute function`);
+    const entry = {
+      name,
+      description: typeof tool.description === "string" ? tool.description : "",
+      inputSchema: tool.inputSchema && typeof tool.inputSchema === "object" ? tool.inputSchema : {},
+      execute: tool.execute,
+    };
+    tools.set(name, entry);
+    return entry;
+  };
+  const mc = {
+    registerTool(tool, options) {
+      const entry = add(tool);
+      const remove = () => { if (tools.get(entry.name) === entry) tools.delete(entry.name); };
+      const signal = options && options.signal;
+      if (signal && typeof signal.addEventListener === "function") {
+        if (signal.aborted) remove();
+        else signal.addEventListener("abort", remove, { once: true });
+      }
+      return { unregister: remove };
+    },
+    unregisterTool(name) { tools.delete(String(name)); },
+    provideContext(context) {
+      tools.clear();
+      const list = Array.isArray(context) ? context : (context && Array.isArray(context.tools) ? context.tools : []);
+      for (const tool of list) add(tool);
+    },
+    clearContext() { tools.clear(); },
+  };
+  Object.defineProperty(mc, KEY, {
+    value: {
+      list() {
+        return Array.from(tools.values(), (t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
+      },
+      async call(name, args) {
+        if (!tools.has(name)) return { ok: false, kind: "unknown", available: Array.from(tools.keys()) };
+        const tool = tools.get(name);
+        const client = { requestUserInteraction: (cb) => (typeof cb === "function" ? Promise.resolve(cb()) : Promise.resolve()) };
+        try {
+          const raw = await tool.execute(args, client);
+          const value = raw === undefined ? null : JSON.parse(JSON.stringify(raw));
+          return { ok: true, value };
+        } catch (err) {
+          return { ok: false, kind: "tool_error", error: err && err.message ? String(err.message) : String(err) };
+        }
+      },
+    },
+  });
+  Object.defineProperty(navigator, "modelContext", { value: mc, configurable: true, writable: true, enumerable: true });
+})();"""
+
+WEBMCP_LIST_JS = r"""(() => {
+  if (typeof navigator === "undefined") return [];
+  const parseSchema = (s) => {
+    if (typeof s === "string") { try { return JSON.parse(s); } catch { return {}; } }
+    if (s && typeof s === "object") { try { return JSON.parse(JSON.stringify(s)); } catch { return {}; } }
+    return {};
+  };
+  const norm = (list) => Array.isArray(list) ? list.map((t) => ({
+    name: String((t && t.name) || ""),
+    description: typeof (t && t.description) === "string" ? t.description : "",
+    inputSchema: parseSchema(t && t.inputSchema),
+  })).filter((t) => t.name) : [];
+  const mc = navigator.modelContext;
+  const shim = mc && mc[Symbol.for("__pi_webmcp__")];
+  if (shim) return norm(shim.list());
+  const testing = navigator.modelContextTesting;
+  if (testing && typeof testing.listTools === "function") return norm(testing.listTools());
+  if (mc && typeof mc.listTools === "function") return norm(mc.listTools());
+  if (mc && typeof mc.getTools === "function") return norm(mc.getTools());
+  return [];
+})()"""
+
+WEBMCP_CALL_JS = r"""async (name, args) => {
+  if (typeof navigator === "undefined") return { ok: false, kind: "unknown", available: [] };
+  const mc = navigator.modelContext;
+  const shim = mc && mc[Symbol.for("__pi_webmcp__")];
+  if (shim) return await shim.call(name, args);
+  const testing = navigator.modelContextTesting;
+  if (testing && typeof testing.executeTool === "function") {
+    const tools = typeof testing.listTools === "function" ? testing.listTools() : [];
+    const names = Array.isArray(tools) ? tools.map((t) => t && t.name).filter(Boolean) : [];
+    if (names.length && !names.includes(name)) return { ok: false, kind: "unknown", available: names };
+    try {
+      const raw = await testing.executeTool(name, JSON.stringify(args));
+      let value = raw === undefined ? null : raw;
+      if (typeof value === "string") { try { value = JSON.parse(value); } catch {} }
+      else value = JSON.parse(JSON.stringify(value));
+      return { ok: true, value };
+    } catch (err) {
+      return { ok: false, kind: "tool_error", error: err && err.message ? String(err.message) : String(err) };
+    }
+  }
+  const runner = mc && (typeof mc.executeTool === "function" ? mc.executeTool.bind(mc) : typeof mc.callTool === "function" ? mc.callTool.bind(mc) : null);
+  if (runner) {
+    const tools = typeof mc.listTools === "function" ? mc.listTools() : (typeof mc.getTools === "function" ? mc.getTools() : []);
+    const names = Array.isArray(tools) ? tools.map((t) => t && t.name).filter(Boolean) : [];
+    if (names.length && !names.includes(name)) return { ok: false, kind: "unknown", available: names };
+    try {
+      const raw = await runner(name, args);
+      const value = raw === undefined ? null : JSON.parse(JSON.stringify(raw));
+      return { ok: true, value };
+    } catch (err) {
+      return { ok: false, kind: "tool_error", error: err && err.message ? String(err.message) : String(err) };
+    }
+  }
+  return { ok: false, kind: "unknown", available: [] };
+}"""
+
 
 class Router:
     """Drains the daemon's event buffer once and hands each event to the tab that owns its session."""
@@ -309,7 +427,7 @@ class Tab:
             return ax.Printed(url)
 
         def state(max=3000):
-            return tab.ax.state(max=max)
+            return tab._state(max=max)
 
         def click(id):
             tab.effect = True
@@ -359,6 +477,12 @@ class Tab:
                 raise RuntimeError("JavaScript failed: " + ((details.get("exception") or {}).get("description") or details.get("text", "exception")))
             remote = result.get("result") or {}
             return remote.get("value", remote.get("unserializableValue", remote.get("description")))
+
+        def webmcp_tools():
+            return tab._webmcp_list()
+
+        def webmcp_call(name, args=None):
+            return tab._webmcp_call(name, args)
 
         def visible(text):
             found = tab._read("Runtime.evaluate", expression=f"document.body && document.body.innerText.includes({json.dumps(text)})", returnByValue=True)
@@ -433,13 +557,74 @@ class Tab:
 
         return {"__name__": "__cell__", "__builtins__": __builtins__, "__bu_echo": echo, "json": json, "re": re, "time": time,
                 "math": math, "cdp": tab.cdp, "goto": goto, "state": state, "click": click, "type": type_, "press": press,
-                "scroll": scroll, "upload": upload, "js": js, "wait_for": wait_for,
-                "wait_for_network_idle": wait_for_network_idle, "network": network, "dialog": dialog, "intercept": intercept,
-                "intercept_status": intercept_status, "intercept_stop": intercept_stop, "screenshot": screenshot}
+                "scroll": scroll, "upload": upload, "js": js, "webmcp_tools": webmcp_tools, "webmcp_call": webmcp_call,
+                "wait_for": wait_for, "wait_for_network_idle": wait_for_network_idle, "network": network, "dialog": dialog,
+                "intercept": intercept, "intercept_status": intercept_status, "intercept_stop": intercept_stop, "screenshot": screenshot}
 
     def _read(self, method, **params):
         self.called = True
         return self._raw(method, params)
+
+    def _webmcp_list(self, quiet=False):
+        try:
+            result = self._read("Runtime.evaluate", expression=WEBMCP_LIST_JS, returnByValue=True, awaitPromise=True)
+        except Exception:
+            if quiet:
+                return []
+            raise
+        if result.get("exceptionDetails"):
+            if quiet:
+                return []
+            details = result["exceptionDetails"]
+            raise RuntimeError("webmcp_tools failed: " + ((details.get("exception") or {}).get("description") or details.get("text", "exception")))
+        value = (result.get("result") or {}).get("value")
+        return value if isinstance(value, list) else []
+
+    def _webmcp_call(self, name, args=None):
+        if not isinstance(name, str) or not name:
+            raise ValueError("webmcp_call(name, args) requires a non-empty string tool name")
+        payload = {} if args is None else args
+        try:
+            args_json = json.dumps(payload)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"webmcp_call args must be JSON-serializable: {error}") from None
+        prev_effect = self.effect
+        expr = f"({WEBMCP_CALL_JS})({json.dumps(name)}, {args_json})"
+        result = self.cdp("Runtime.evaluate", expression=expr, returnByValue=True, awaitPromise=True, userGesture=True)
+        if result.get("exceptionDetails"):
+            details = result["exceptionDetails"]
+            msg = (details.get("exception") or {}).get("description") or details.get("text", "exception")
+            raise RuntimeError(f"WebMCP tool {name!r} failed: {msg}")
+        outcome = (result.get("result") or {}).get("value")
+        if not isinstance(outcome, dict):
+            raise RuntimeError(f"WebMCP tool {name!r} returned an unexpected response")
+        if outcome.get("ok") is True:
+            return outcome.get("value")
+        if outcome.get("kind") == "unknown":
+            self.effect = prev_effect
+            available = outcome.get("available") or []
+            hint = f"; available: {', '.join(available)}" if available else "; page exposes no WebMCP tools"
+            raise ValueError(f"Unknown WebMCP tool {name!r}{hint}")
+        raise RuntimeError(f"WebMCP tool {name!r} failed: {outcome.get('error') or 'tool error'}")
+
+    def _state(self, max=3000):
+        out = self.ax.state(max=max)
+        tools = self._webmcp_list(quiet=True)
+        names = [ax.norm(t.get("name")) for t in tools if isinstance(t, dict) and ax.norm(t.get("name"))]
+        if not names:
+            return out
+        line = "webmcp: " + ", ".join(names)
+        text = str(out)
+        if text.startswith("[state] ") and "\n" in text:
+            head, rest = text.split("\n", 1)
+            updated = f"{head}\n{line}\n{rest}"
+        else:
+            updated = f"{text}\n{line}" if text else line
+        if self.buffer and self.buffer[-1] == f"{text}\n":
+            self.buffer[-1] = f"{updated}\n"
+        else:
+            self._emit(line)
+        return ax.Printed(updated)
 
     def stop_interceptor(self):
         editor, self.interceptor = self.interceptor, None
@@ -472,7 +657,7 @@ class Tab:
         # A cell that acted ends with the page, so the next step starts from what is there now.
         if self._ax is not None and getattr(self._ax, "acted", False):
             try:
-                self.ax.state()
+                self._state()
             except Exception as failure:
                 self._emit(f"[state unavailable: {str(failure)[:200]}]")
         for report in self._flush_dialogs():
@@ -524,7 +709,7 @@ class Tab:
         failure = None
         with contextlib.redirect_stdout(stdout):
             try:
-                self.ax.state(max=max)
+                self._state(max=max)
             except BaseException as error:
                 failure = error
         return self._finish("error", self._describe(failure)) if failure else self._finish("ok")

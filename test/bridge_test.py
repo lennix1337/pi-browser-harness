@@ -120,6 +120,18 @@ class Serve(unittest.TestCase):
             self.assertIn(("Emulation.setFocusEmulationEnabled", "s", {"enabled": True}), calls)
             self.assertEqual(calls[0][2].get("background"), True, "the tab still opens in the background")
 
+    def test_open_installs_webmcp_shim_on_new_documents_without_overriding_native(self):
+        answers = {**self.page, "Target.createTarget": {"targetId": "owned"}, "Target.attachToTarget": {"sessionId": "s"}}
+        with tempfile.TemporaryDirectory() as root:
+            _, outbox, calls, _ = self.run_worker([self.hello, {"id": 1, "action": "open", "endpoint": ENDPOINT}], root, answers)
+            self.assertTrue(outbox[1]["ok"])
+            shim_calls = [params for method, session, params in calls if method == "Page.addScriptToEvaluateOnNewDocument" and session == "s"]
+            self.assertEqual(len(shim_calls), 1)
+            source = shim_calls[0]["source"]
+            self.assertIn("navigator.modelContext", source)
+            self.assertIn("registerTool", source)
+            self.assertIn("provideContext", source)
+
     def test_cells_on_one_tab_share_variables_across_requests_and_each_reply_carries_its_id(self):
         with tempfile.TemporaryDirectory() as root:
             _, outbox, _, _ = self.run_worker([self.hello, self.cell(1, "n = 20"), self.cell(2, "n + 22")], root, self.page)

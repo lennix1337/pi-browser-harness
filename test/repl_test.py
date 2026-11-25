@@ -302,5 +302,60 @@ class Output(unittest.TestCase):
         self.assertEqual(harness.methods().count("Page.captureScreenshot"), 2)
 
 
+class WebMCP(unittest.TestCase):
+    def test_webmcp_tools_is_read_only_and_returns_empty_list_when_none(self):
+        harness, _, tab = make_tab(self)
+        harness.answers["Runtime.evaluate"] = {"result": {"value": []}}
+        result = tab.run("tools = webmcp_tools()\nassert tools == []\n1/0")
+        self.assertEqual(result["status"], "error", "webmcp_tools is a read, not an effect")
+
+    def test_webmcp_tools_lists_exposed_tools(self):
+        harness, _, tab = make_tab(self)
+        tools = [{"name": "add_mugs", "description": "Add mugs", "inputSchema": {"type": "object"}}]
+        harness.answers["Runtime.evaluate"] = {"result": {"value": tools}}
+        result = tab.run("webmcp_tools()")
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("add_mugs", result["output"])
+
+    def test_webmcp_call_returns_result_and_errors_cleanly_on_unknown_or_tool_error(self):
+        harness, _, tab = make_tab(self)
+        harness.answers["Runtime.evaluate"] = {"result": {"value": {"ok": True, "value": {"count": 2}}}}
+        ok = tab.run("webmcp_call('add_mugs', {'count': 2})")
+        self.assertEqual(ok["status"], "ok")
+        self.assertEqual(ok["output"].strip(), "{'count': 2}")
+
+        harness.answers["Runtime.evaluate"] = {"result": {"value": {"ok": False, "kind": "unknown", "available": ["add_mugs"]}}}
+        missing = tab.run("webmcp_call('missing', {})")
+        self.assertEqual(missing["status"], "error", "unknown tool never executed, so no uncertain effect")
+        self.assertIn("missing", missing["error"])
+        self.assertIn("add_mugs", missing["error"])
+
+        harness.answers["Runtime.evaluate"] = {"result": {"value": {"ok": False, "kind": "tool_error", "error": "out of stock"}}}
+        boom = tab.run("webmcp_call('add_mugs', {'count': 99})")
+        self.assertEqual(boom["status"], "outcome_uncertain")
+        self.assertIn("out of stock", boom["error"])
+
+    def test_webmcp_call_validates_name_and_args_before_dispatch(self):
+        harness, _, tab = make_tab(self)
+        self.assertEqual(tab.run("webmcp_call('', {})")["status"], "error")
+        self.assertEqual(tab.run("webmcp_call('ok', object())")["status"], "error")
+        self.assertEqual(set(harness.methods()) - {"Target.getTargetInfo"}, set())
+
+    def test_state_adds_webmcp_line_only_when_tools_exist(self):
+        harness, _, tab = make_tab(self)
+        harness.answers["Runtime.evaluate"] = {"result": {"value": []}}
+        plain = tab.state()
+        self.assertEqual(plain["status"], "ok")
+        self.assertNotIn("webmcp:", plain["output"])
+
+        harness.answers["Runtime.evaluate"] = {
+            "result": {"value": [{"name": "add_to_cart", "description": "", "inputSchema": {}},
+                                 {"name": "remove_item", "description": "", "inputSchema": {}}]}
+        }
+        with_tools = tab.state()
+        self.assertEqual(with_tools["status"], "ok")
+        self.assertIn("webmcp: add_to_cart, remove_item", with_tools["output"])
+
+
 if __name__ == "__main__":
     unittest.main()
