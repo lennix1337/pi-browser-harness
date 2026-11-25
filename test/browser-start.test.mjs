@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { start } from '../scripts/browser.mjs';
+import { noDisplay, start } from '../scripts/browser.mjs';
 
 
 
@@ -97,4 +97,12 @@ test('a browser that ended by itself or never started is reported as that, and n
     await assert.rejects(start(true, { ...untouched, launch: missing }), /ENOENT; no browser process was started\.$/);
     assert.equal(existsSync(join(dir, 'browser.json')), false);
   } finally { reap(dir); }
+});
+
+test('a Linux host without a display starts headless instead of a browser that exits at once', () => {
+  assert.equal(noDisplay('linux', {}), true);
+  assert.equal(noDisplay('linux', { DISPLAY: ':0' }), false);
+  assert.equal(noDisplay('linux', { WAYLAND_DISPLAY: 'wayland-0' }), false);
+  assert.equal(noDisplay('win32', {}), false);
+  assert.equal(noDisplay('darwin', {}), false);
 });
